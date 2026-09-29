@@ -1,0 +1,63 @@
+{
+	"name": "@epoch32/aura",
+	"version": "1.0.0",
+	"description": "Zero-dependency, high-performance Edge-Native Asymmetric Memory-Hard Function (aMHF) & Hybrid KDF for modern browsers and serverless runtimes",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/epoch32/aura.git"
+	},
+	"type": "module",
+	"sideEffects": false,
+	"main": "./src/index.ts",
+	"module": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"bun": "./src/index.ts",
+			"import": "./src/index.ts",
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "bun build ./src/index.ts --outdir ./dist --target browser --minify-whitespace && tsc -p tsconfig.build.json",
+		"prepublishOnly": "bun test && bun run build",
+		"test": "bun test",
+		"typecheck": "tsc --noEmit"
+	},
+	"keywords": [
+		"aura",
+		"argon2",
+		"argon2id",
+		"kdf",
+		"memory-hard",
+		"amhf",
+		"trapdoor",
+		"webcrypto",
+		"passkeys",
+		"cloudflare-workers",
+		"edge",
+		"zero-dependency"
+	],
+	"epoch32": {
+		"initiative": "systems-research",
+		"category": "cryptography",
+		"status": "active-spec",
+		"standard": "RFC 9106 / FIPS 180-4 / W3C WebAuthn L3 PRF"
+	},
+	"author": "Epoch32 Research Initiative",
+	"license": "MPL-2.0",
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.7.2"
+	}
+}
