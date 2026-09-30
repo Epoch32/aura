@@ -133,6 +133,7 @@ export class MemoryDag {
 		lane: number,
 		index: number,
 		prevBlock: Uint32Array,
+		h0: Uint8Array,
 	): { refLane: number; refIndex: number } {
 		const isFirstHalf = index < Math.floor(this.blocksPerLane / 2);
 		const isDataIndependent =
@@ -149,6 +150,15 @@ export class MemoryDag {
 			addrBlock[2] = index;
 			addrBlock[3] = this.config.memoryCostKb;
 			addrBlock[4] = this.config.timeCost;
+			// Bind address block to the password via H0 so that the data-independent
+			// access pattern is unique per password, even across identical configs.
+			// Without this, an attacker could precompute the traversal graph once and
+			// reuse it for all cracking attempts against the same configuration.
+			// H0 is 64 bytes; read the first 8 words as little-endian uint32.
+			for (let w = 0; w < 8; w++) {
+				const off = w * 4;
+				addrBlock[w] ^= (h0[off] | (h0[off + 1] << 8) | (h0[off + 2] << 16) | (h0[off + 3] << 24)) >>> 0;
+			}
 			permuteBlock(addrBlock);
 			pseudoRand = addrBlock[index % BLOCK_SIZE_WORDS] >>> 0;
 		} else {
@@ -197,7 +207,7 @@ export class MemoryDag {
 					const prevIdx = i === 0 ? this.blocksPerLane - 1 : i - 1;
 					const prevBlock = this.getBlock(lane, prevIdx);
 
-					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
+					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock, h0);
 
 					// Prevent self-reference: mixBlocks reads from refBlock and writes to currentBlock.
 					// If refBlock === currentBlock, the XOR and permute operate on a partially-written
