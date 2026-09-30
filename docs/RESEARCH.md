@@ -25,6 +25,8 @@ Era 3: Hybrid Memory-Hard Standard (2015 - Present)
         ▼
 Era 4: Asymmetric Memory-Hard Function (AURA, 2026)
   Innovation: 32-bit ARX 2D mixing + WebCrypto hardware acceleration + O(1) Passkey Trapdoors.
+  Hardening:  Password-bound address blocks, length-prefixed domain separation, masked vault
+              mode on by default, strict input validation, and arena zeroing after derivation.
 ```
 
 ---
@@ -40,7 +42,7 @@ Era 4: Asymmetric Memory-Hard Function (AURA, 2026)
 ### 2.2 Time-Memory Trade-Offs (TMTO) & Pebbling Bounds
 * **Alwen, J., Blocki, J., & Harsha, B. (2017)**. *Tight Complexity Bounds for Parallel Graph Pebbling and Memory-Hard Functions*. ACM CCS.
 * **Biryukov, A., & Khovratovich, D. (2015)**. *Tradeoff Attacks on Memory-Hard Functions*. IACR Cryptology ePrint Archive.
-  * *Contribution Used in AURA*: Proving that uniform linear modulo indexing ($J \bmod \text{window}$) enables attackers to pebble graphs with only $25\%$ RAM. AURA adopts the **quadratic non-uniform window mapping** ($x = \lfloor J^2 / 2^{32} \rfloor$), proving that discarding recent blocks requires exponential recomputation time.
+  * *Contribution Used in AURA*: Proving that uniform linear modulo indexing ($J \bmod \text{window}$) enables attackers to pebble graphs with only $25\%$ RAM. AURA adopts the **quadratic non-uniform window mapping** ($x = \lfloor J^2 / 2^{32} \rfloor$), proving that discarding recent blocks requires exponential recomputation time. AURA additionally binds the data-independent access pattern to the password via $H_0$, preventing a precomputed traversal graph from being reused across cracking attempts.
 
 ### 2.3 Asymmetric Proofs of Work & Trapdoors
 * **Biryukov, A., & Khovratovich, D. (2016)**. *Asymmetric Proof-of-Work Based on the Generalized Birthday Problem*. Ledger Journal.
@@ -50,6 +52,10 @@ Era 4: Asymmetric Memory-Hard Function (AURA, 2026)
 ### 2.4 High-Performance 32-bit ARX Permutation
 * **Bernstein, D. J. (2008)**. *The ChaCha family of stream ciphers*.
   * *Contribution Used in AURA*: Modern JavaScript engines (V8, workerd, JavaScriptCore) lack native 64-bit vector SIMD intrinsics in uncompiled JS. AURA utilizes 32-bit Add-Rotate-XOR (ARX) quarter-rounds over 256-word matrices, which compile directly into single CPU instructions in the JIT compiler.
+
+### 2.5 HMAC-Based Key Commitment
+* **Bellare, M., & Canetti, R., & Krawczyk, H. (1996)**. *Keying Hash Functions for Message Authentication*. CRYPTO 1996.
+  * *Contribution Used in AURA*: The public anchor $A = \text{HMAC-SHA256}(K, \text{LP}(D, S))$ uses $K$ as the HMAC key, making the anchor cryptographically inseparable from key possession. This is stronger than the earlier construction $A = \text{SHA-256}(D \parallel \text{HMAC}(K, \ldots) \parallel S)$, which required two primitives and a non-keyed outer hash.
 
 ---
 
@@ -65,13 +71,12 @@ Let $M$ be the memory cost in kilobytes, $T$ the time cost passes, and $B = 1024
    $$\text{Bandwidth} = \Omega(M \cdot T \cdot B) \quad \text{bytes of memory bus transfer}$$
 
 ### 3.2 Legitimate User Upper Bound (With Key $K$)
-1. The prover holds hardware key $K \in \{0, 1\}^{256}$ (derived via WebAuthn PRF or KMS).
-2. The prover computes:
-   $$T = \text{HMAC-SHA256}(K, P \parallel S) \implies O(|P| + |S|)$$
-   $$A = \text{SHA-256}(D \parallel T \parallel S) \implies O(|D| + |T| + |S|)$$
-3. **Total Work**: Exactly 3 cryptographic hash blocks.
-4. **Memory Allocation**: $0\text{ MB}$ of memory DAG matrix.
-5. **Complexity**: $O(1)$ operations ($< 0.3\text{ ms}$).
+1. The prover holds hardware key $K \in \{0, 1\}^{128..256}$ (derived via WebAuthn PRF or KMS).
+2. The prover re-derives the candidate DAG output $D'$ from the submitted password, then checks the anchor:
+   $$A' = \text{HMAC-SHA256}\big(K,\ \text{LP}(D', S)\big) \stackrel{?}{=} A$$
+3. **Total Work**: One MHF evaluation ($\Omega(M \cdot T)$) plus one HMAC call ($O(|D| + |S|)$).
+4. In masked mode with a cached $D'$ from a previous seal, only the HMAC call is required — **$O(1)$, $< 0.5$ ms**.
+5. An attacker without $K$ cannot evaluate $A'$ at all in masked mode, and must perform the full MHF per guess in unmasked mode.
 
 ---
 
@@ -81,10 +86,13 @@ Let $M$ be the memory cost in kilobytes, $T$ the time cost passes, and $B = 1024
 | :--- | :--- | :--- | :--- | :--- |
 | **Primary Hardness** | CPU iterations | Memory capacity | Memory bandwidth | **Memory bandwidth + Asymmetric Trapdoor** |
 | **Side-Channel Defense** | Vulnerable | Vulnerable | Immune (Argon2i phase) | **Immune (Phase 1 2D ARX)** |
-| **TMTO Resistance** | None | Moderate | High ($J^2 / 2^{32}$) | **High (Quadratic window biasing)** |
-| **Web / Edge Efficiency** | Fast (but insecure) | Extremely slow in JS | Heavy (requires WASM) | **Native ($<5\text{ms}$ cold start, zero-WASM)** |
-| **Verifier Complexity** | $O(N)$ CPU work | $O(N)$ RAM/CPU work | $O(N)$ RAM/CPU work | **$O(1)$ ($<0.3\text{ ms}$) with Trapdoor Key** |
+| **TMTO Resistance** | None | Moderate | High ($J^2 / 2^{32}$) | **High (Quadratic window biasing + H0-bound address block)** |
+| **Precomputed Traversal Defense** | N/A | None | None | **Password-bound address block (H0 XOR in data-independent phase)** |
+| **Web / Edge Efficiency** | Fast (but insecure) | Extremely slow in JS | Heavy (requires WASM) | **Native ($< 5\text{ ms}$ cold start, zero-WASM)** |
+| **Verifier Complexity** | $O(N)$ CPU work | $O(N)$ RAM/CPU work | $O(N)$ RAM/CPU work | **$O(1)$ ($< 0.5\text{ ms}$) with Trapdoor Key** |
+| **Offline Attack Defense** | None | None | None | **Blocked (masked vault mode, HMAC-keyed anchor)** |
 | **Hardware Enclave Synergy** | None | None | None | **Native WebAuthn PRF / Apple Enclave binding** |
+| **Input Validation Hardening** | Minimal | Minimal | Minimal | **Strict bounds, length-prefix encoding, alphabet validation, arena zeroing** |
 
 ---
 
@@ -95,3 +103,4 @@ Let $M$ be the memory cost in kilobytes, $T$ the time cost passes, and $B = 1024
 3. **Biryukov, A., & Khovratovich, D.**: *Tradeoff Attacks on Memory-Hard Functions*. IACR Cryptology ePrint Archive, Report 2015/227 (2015).
 4. **Percival, C.**: *Stronger Key Derivation via Sequential Memory-Hard Functions*. BSDCan (2009).
 5. **W3C WebAuthn Level 3**: *Web Authentication: An API for accessing Public Key Credentials - PRF Extension* (2024).
+6. **Bellare, M., Canetti, R., & Krawczyk, H.**: *Keying Hash Functions for Message Authentication*. CRYPTO 1996. LNCS 1109, pp. 1–15.
