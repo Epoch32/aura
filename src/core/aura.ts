@@ -173,6 +173,18 @@ export class Aura {
 		hashOrEnvelope: string | AuraSealedEnvelope,
 		trapdoorKey?: Uint8Array,
 	): Promise<boolean> {
+		try {
+			return await Aura._verify(password, hashOrEnvelope, trapdoorKey);
+		} catch {
+			return false;
+		}
+	}
+
+	private static async _verify(
+		password: string | Uint8Array,
+		hashOrEnvelope: string | AuraSealedEnvelope,
+		trapdoorKey?: Uint8Array,
+	): Promise<boolean> {
 		const pwdBytes = Aura.toBytes(password);
 
 		// Case A: Trapdoor Envelope Verification
@@ -241,6 +253,21 @@ export class Aura {
 		const timeCost = Number.parseInt(params.get("t") ?? "2", 10);
 		const parallelism = Number.parseInt(params.get("p") ?? "1", 10);
 		const mode = (params.get("mode") ?? "hybrid") as AuraMode;
+
+		// Validate parameter ranges — prevents DoS via enormous memory allocation or
+		// unbounded computation, and rejects unknown mode strings that would silently
+		// fall through to data-dependent indexing.
+		if (
+			Number.isNaN(memoryCostKb) || memoryCostKb < 8 || memoryCostKb > 65536 ||
+			Number.isNaN(timeCost)     || timeCost < 1     || timeCost > 64 ||
+			Number.isNaN(parallelism)  || parallelism < 1  || parallelism > 16
+		) {
+			return false;
+		}
+		const VALID_MODES: AuraMode[] = ["hybrid", "independent", "dependent"];
+		if (!VALID_MODES.includes(mode)) {
+			return false;
+		}
 
 		const salt = base64UrlToBytes(parts[3]);
 		const expectedHash = base64UrlToBytes(parts[4]);
