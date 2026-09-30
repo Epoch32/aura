@@ -4,7 +4,7 @@
  * Hardened with Non-Uniform Quadratic Indexing (TMTO Defense) & ARX Address Expansion
  */
 
-import { concatBytes } from "../encoding/bytes";
+import { concatBytes, encodeLengthPrefixed } from "../encoding/bytes";
 import { BLOCK_SIZE_BYTES, BLOCK_SIZE_WORDS, copyBlock, mixBlocks, permuteBlock } from "./block";
 
 export type AuraMode = "hybrid" | "independent" | "dependent";
@@ -84,11 +84,11 @@ export class MemoryDag {
 		// bytes 13–15: reserved / zero padding
 		view.setUint32(16, config.outputLength, true);
 
+		// encodeLengthPrefixed prevents ambiguous concatenation: (pwd="abc", salt="defg") and
+		// (pwd="abcd", salt="efg") produce the same raw bytes without length prefixes.
 		const payload = concatBytes(
 			header,
-			password,
-			salt,
-			additionalData ?? new Uint8Array(0),
+			encodeLengthPrefixed(password, salt, additionalData ?? new Uint8Array(0)),
 		);
 
 		const digest = await crypto.subtle.digest("SHA-512", payload as unknown as BufferSource);
