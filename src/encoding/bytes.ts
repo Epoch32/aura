@@ -29,6 +29,9 @@ export function hexToBytes(hex: string): Uint8Array {
 	if (cleaned.length % 2 !== 0) {
 		throw new Error(`Invalid hex string length: ${cleaned.length}`);
 	}
+	if (cleaned.length > 0 && !/^[0-9a-fA-F]+$/.test(cleaned)) {
+		throw new Error("Invalid hex string: contains non-hex characters");
+	}
 	const bytes = new Uint8Array(cleaned.length / 2);
 	for (let i = 0; i < cleaned.length; i += 2) {
 		bytes[i / 2] = Number.parseInt(cleaned.substring(i, i + 2), 16);
