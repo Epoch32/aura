@@ -247,7 +247,13 @@ export class MemoryDag {
 		const finalU8 = new Uint8Array(finalBlock.buffer, finalBlock.byteOffset, BLOCK_SIZE_BYTES);
 		const finalDigest = await crypto.subtle.digest("SHA-512", finalU8 as unknown as BufferSource);
 		const digestBytes = new Uint8Array(finalDigest);
+		const output = digestBytes.slice(0, this.config.outputLength);
 
-		return digestBytes.slice(0, this.config.outputLength);
+		// Wipe the memory arena so intermediate graph state does not linger in the heap.
+		// In long-running serverless environments, retained ArrayBuffers can accumulate
+		// and expose intermediate values to co-resident code with memory-read primitives.
+		new Uint8Array(this.memoryBuffer).fill(0);
+
+		return output;
 	}
 }
