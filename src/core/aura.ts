@@ -82,6 +82,9 @@ export class Aura {
 	): Promise<Uint8Array> {
 		const config = Aura.resolveConfig(options);
 		const pwdBytes = Aura.toBytes(password);
+		if (salt.length < 8) {
+			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		}
 
 		const h0 = await MemoryDag.computeInitialSeed(
 			pwdBytes,
