@@ -104,6 +104,9 @@ export class Aura {
 	): Promise<AuraHashResult> {
 		const config = Aura.resolveConfig(options);
 		const salt = options?.salt ?? randomBytes(16);
+		if (salt.length < 8) {
+			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		}
 		const rawHash = await Aura.deriveKey(password, salt, options);
 
 		const encoded = [
@@ -133,6 +136,9 @@ export class Aura {
 	): Promise<AuraSealedEnvelope> {
 		const config = Aura.resolveConfig(options);
 		const salt = options?.salt ?? randomBytes(16);
+		if (salt.length < 8) {
+			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		}
 		const pwdBytes = Aura.toBytes(password);
 		const isMasked = options?.masked ?? true;
 
