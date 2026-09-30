@@ -22,7 +22,7 @@ export interface AuraOptions {
 	readonly outputLength?: number; // Default: 32 bytes
 	readonly salt?: Uint8Array;
 	readonly additionalData?: Uint8Array;
-	readonly masked?: boolean;      // Default: false (enables HKDF vault masking)
+	readonly masked?: boolean;      // Default: true (enables HKDF vault masking; set false only if trapdoor key is unavailable at verify time)
 }
 
 export interface AuraHashResult {
@@ -134,7 +134,7 @@ export class Aura {
 		const config = Aura.resolveConfig(options);
 		const salt = options?.salt ?? randomBytes(16);
 		const pwdBytes = Aura.toBytes(password);
-		const isMasked = options?.masked ?? false;
+		const isMasked = options?.masked ?? true;
 
 		// 1. Compute Memory-Hard DAG Output
 		const dagOutput = await Aura.deriveKey(pwdBytes, salt, options);
