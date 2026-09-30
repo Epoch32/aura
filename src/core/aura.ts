@@ -293,6 +293,13 @@ export class Aura {
 		}
 
 		const salt = base64UrlToBytes(parts[3]);
+		// Pre-check hash length before decoding — mirrors the envelope dagOutput guard.
+		// A crafted PHC string with a huge parts[4] segment would otherwise allocate
+		// a large buffer before MemoryDag's outputLength > 64 check can reject it.
+		const approxHashLen = Math.floor(parts[4].length * 3 / 4);
+		if (approxHashLen < 1 || approxHashLen > 64) {
+			return false;
+		}
 		const expectedHash = base64UrlToBytes(parts[4]);
 
 		const computedHash = await Aura.deriveKey(pwdBytes, salt, {
