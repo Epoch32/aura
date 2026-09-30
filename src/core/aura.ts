@@ -204,6 +204,17 @@ export class Aura {
 				return false;
 			}
 			const rawDagStored = base64UrlToBytes(hashOrEnvelope.dagOutput);
+			// Validate envelope params — mirrors the bounds enforced in the PHC string path
+			// to prevent DoS via enormous allocation, CPU exhaustion, or silent mode degradation.
+			const VALID_ENV_MODES: AuraMode[] = ["hybrid", "independent", "dependent"];
+			if (
+				!Number.isInteger(hashOrEnvelope.memoryCostKb) || hashOrEnvelope.memoryCostKb < 8   || hashOrEnvelope.memoryCostKb > 65536 ||
+				!Number.isInteger(hashOrEnvelope.timeCost)     || hashOrEnvelope.timeCost < 1        || hashOrEnvelope.timeCost > 64 ||
+				!Number.isInteger(hashOrEnvelope.parallelism)  || hashOrEnvelope.parallelism < 1     || hashOrEnvelope.parallelism > 16 ||
+				!VALID_ENV_MODES.includes(hashOrEnvelope.mode)
+			) {
+				return false;
+			}
 			const dagOptions = {
 				memoryCostKb: hashOrEnvelope.memoryCostKb,
 				timeCost: hashOrEnvelope.timeCost,
