@@ -49,10 +49,14 @@ pnpm add github:epoch32/aura
 
 Verified in the automated test suite (`bun test`):
 
-| Actor | Key Access | Evaluation Path | Execution Time |
-| :--- | :--- | :--- | :--- |
-| **Legitimate User** | Hardware Passkey (PRF) | $O(1)$ Algebraic Trapdoor Shortcut | **`0.32 ms`** |
-| **Offline Attacker** | None (Brute-Force) | Full 8MB Hybrid Memory DAG Traversal | **`58.77 ms` (181x slower + 8MB RAM/attempt)** |
+| Actor | Mode | Key Access | Verification Path | Time |
+| :--- | :--- | :--- | :--- | :--- |
+| **Legitimate User** | Masked | Hardware Passkey (PRF) | O(1) HMAC anchor check — no MHF | **`< 1 ms`** |
+| **Legitimate User** | Unmasked | Hardware Passkey (PRF) | Full MHF re-derivation + HMAC | **`~30–60 ms`** |
+| **Offline Attacker** | Masked | None | Blocked — `dagOutput` is ciphertext, anchor requires K | **Impossible** |
+| **Offline Attacker** | Unmasked | None | Full MHF re-derivation per attempt | **`~30–60 ms` + 4–8 MB RAM/attempt** |
+
+> **Tip**: Use `masked: true` to unlock the O(1) fast path and fully block offline dictionary attacks.
 
 ---
 

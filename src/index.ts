@@ -36,6 +36,7 @@ export {
 	bytesToUtf8,
 	concatBytes,
 	constantTimeEqual,
+	encodeLengthPrefixed,
 	hexToBytes,
 	randomBytes,
 	utf8ToBytes,

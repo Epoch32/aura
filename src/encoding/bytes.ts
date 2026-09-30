@@ -37,12 +37,36 @@ export function hexToBytes(hex: string): Uint8Array {
 }
 
 export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-	if (a.length !== b.length) return false;
-	let diff = 0;
-	for (let i = 0; i < a.length; i++) {
-		diff |= a[i] ^ b[i];
+	// Avoid early exit on length mismatch — iterate the full max-length loop
+	// so the running time does not reveal the expected hash length to a timing attacker.
+	const maxLen = Math.max(a.length, b.length);
+	let diff = a.length ^ b.length; // non-zero if lengths differ
+	for (let i = 0; i < maxLen; i++) {
+		diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
 	}
 	return diff === 0;
+}
+
+/**
+ * Encodes multiple byte arrays with a uint32LE length prefix each before concatenating.
+ * Prevents ambiguous-prefix attacks on HMAC inputs where variable-length fields are joined.
+ *   e.g. pwd="abc", salt="defg"  vs  pwd="abcd", salt="efg"  → same raw concat, different LP encoding
+ */
+export function encodeLengthPrefixed(...arrays: Uint8Array[]): Uint8Array {
+	let totalLength = 0;
+	for (const arr of arrays) {
+		totalLength += 4 + arr.length; // 4-byte prefix per array
+	}
+	const result = new Uint8Array(totalLength);
+	const view = new DataView(result.buffer);
+	let offset = 0;
+	for (const arr of arrays) {
+		view.setUint32(offset, arr.length, true);
+		offset += 4;
+		result.set(arr, offset);
+		offset += arr.length;
+	}
+	return result;
 }
 
 export function randomBytes(length: number): Uint8Array {

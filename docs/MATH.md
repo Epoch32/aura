@@ -19,10 +19,26 @@ Let:
 ## 2. Initial Seed Extraction ($H_0$)
 
 Given password $P$, salt $S$, and parameters $(M, T, p, \text{mode}, L_{\text{out}})$:
-$$H_0 = \text{SHA-512}\Big( M \parallel T \parallel p \parallel \text{mode} \parallel L_{\text{out}} \parallel P \parallel S \Big)$$
+$$H_0 = \text{SHA-512}\Big( \text{Header}_{20} \parallel P \parallel S \Big)$$
 
-Initial blocks $\mathcal{M}[l, 0]$ and $\mathcal{M}[l, 1]$ are expanded from $H_0$:
-$$\mathcal{M}[l, k] = \text{Expand}_{1024}\big( H_0 \parallel l \parallel k \big) \quad \text{for } k \in \{0, 1\}$$
+Where $\text{Header}_{20}$ is a 20-byte domain-separation header with full-width fields:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 bytes (uint32LE) | $M$ (memoryCostKb) |
+| 4 | 4 bytes (uint32LE) | $T$ (timeCost) |
+| 8 | 4 bytes (uint32LE) | $p$ (parallelism) |
+| 12 | 1 byte (uint8) | mode (0=hybrid, 1=independent, 2=dependent) |
+| 13–15 | 3 bytes | reserved / zero padding |
+| 16 | 4 bytes (uint32LE) | $L_{\text{out}}$ (outputLength) |
+
+> [!IMPORTANT]
+> `outputLength` is stored as a full `uint32` to prevent silent truncation. The former `uint8` encoding caused `outputLength=256` and `outputLength=0` to produce the same $H_0$.
+
+Initial blocks $\mathcal{M}[l, k]$ are expanded from $H_0$ per chunk $c \in [0, 15]$:
+$$\mathcal{M}[l, k][c] = \text{SHA-512}\Big( H_0 \parallel \text{uint32LE}(l) \parallel \text{uint32LE}(k) \parallel \text{uint32LE}(c) \Big)$$
+
+Each chunk is derived independently (not via a hash chain) so the per-lane and per-block-index context is preserved across all 16 chunks.
 
 ---
 
@@ -79,21 +95,25 @@ This creates an exponential bias towards recently computed blocks, making memory
 
 Let $K \in \{0, 1\}^{256}$ be a secret key held in a hardware secure enclave or passkey PRF.
 
+Let $\text{LP}(x_1, \ldots, x_n)$ denote **length-prefixed encoding**: each input is preceded by its 4-byte little-endian length, preventing ambiguous-concatenation attacks on HMAC inputs.
+
 ### 5.1 Sealing (Setup)
 1. Compute memory-hard DAG output:
    $$D = \text{Aura}(P, S, M, T, p)$$
-2. Compute secret Trapdoor Token:
-   $$T = \text{HMAC-SHA256}(K, P \parallel S)$$
-3. Compute Public Anchor:
-   $$A = \text{SHA-256}(D \parallel T \parallel S)$$
-4. *(Optional Masked Vault Mode)*:
+2. Compute Public Anchor using $K$ as the HMAC key:
+   $$A = \text{HMAC-SHA256}\big(K,\ \text{LP}(D, S)\big)$$
+3. *(Optional Masked Vault Mode)*:
    $$D_{\text{stored}} = D \oplus \text{HKDF-SHA256}(K, S, \text{"aura:vault:mask"})$$
 
-### 5.2 Verification Complexity
-* **With Trapdoor Key $K$ (Legitimate User)**:
-  Compute $T' = \text{HMAC-SHA256}(K, P \parallel S)$.
-  Unmask $D = D_{\text{stored}} \oplus \text{HKDF-SHA256}(K, S)$.
-  Check $A \stackrel{?}{=} \text{SHA-256}(D \parallel T' \parallel S)$ in **$O(1)$ operations ($< 0.5\text{ ms}$)**.
-* **Without Trapdoor Key $K$ (Offline Attacker)**:
-  * In standard mode: Attacker must compute $D' = \text{Aura}(P', S, M, T, p)$ over the full $M$-kilobyte memory DAG ($O(M \cdot T)$ memory bandwidth).
-  * In masked vault mode: $D_{\text{stored}}$ is cryptographically blinded under $K$, making offline dictionary confirmation **$100\%$ mathematically impossible without $K$**.
+### 5.2 Verification
+* **With Trapdoor Key $K$**:
+  Recompute $D' = \text{Aura}(P', S, M, T, p)$.
+  Check $A \stackrel{?}{=} \text{HMAC-SHA256}(K, \text{LP}(D', S))$.
+* **Without Trapdoor Key $K$ (unmasked mode)**:
+  Recompute $D' = \text{Aura}(P', S, M, T, p)$.
+  Check $D_{\text{stored}} \stackrel{?}{=} D'$ (HMAC anchor cannot be used without $K$).
+* **Without Trapdoor Key $K$ (masked mode)**:
+  Verification is **mathematically impossible** — $D_{\text{stored}}$ is blinded under $K$ and the anchor requires $K$ to evaluate.
+
+> [!IMPORTANT]
+> The anchor $A = \text{HMAC-SHA256}(K, \text{LP}(D, S))$ makes $K$ cryptographically required to verify. An attacker who steals $D_{\text{stored}}$ and $A$ from the database cannot check candidate passwords against the anchor without possessing $K$.

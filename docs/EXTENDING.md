@@ -33,16 +33,19 @@ const isLegit = await Aura.verify(masterPassword, envelope, prfKey);
 ## 2. Integrating with Cloudflare Workers & Durable Objects
 
 ```typescript
-import { Aura, AuraSealedEnvelope } from "@epoch32/aura";
+import { Aura, AuraSealedEnvelope, base64UrlToBytes } from "@epoch32/aura";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { password, envelope } = await request.json() as { password: string; envelope: AuraSealedEnvelope };
 
-    // Get Server KMS Key
-    const serverKmsKey = new TextEncoder().encode(env.KMS_SECRET);
+    // Decode the server KMS key from a base64url-encoded environment variable.
+    // DO NOT use: new TextEncoder().encode(env.KMS_SECRET)
+    //   → TextEncoder produces ASCII bytes (~6.5 bits/byte), collapsing effective entropy.
+    //   → Store KMS_SECRET_B64 as: crypto.getRandomValues(new Uint8Array(32)) → base64url-encode
+    const serverKmsKey = base64UrlToBytes(env.KMS_SECRET_B64);
 
-    // Fast Path O(1): Verifies in ~0.2 ms on Cloudflare Edge Worker
+    // Fast Path (masked envelope): verifies in ~0.2 ms on Cloudflare Edge Worker
     const isValid = await Aura.verify(password, envelope, serverKmsKey);
 
     return Response.json({ authenticated: isValid });

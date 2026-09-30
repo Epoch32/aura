@@ -24,7 +24,7 @@ export class MemoryDag {
 
 	private memoryBuffer: ArrayBuffer;
 	private blocks: Uint32Array[];
-	private addressBuffer: Uint32Array;
+	private executed = false; // guards against accidental re-use of the same instance
 
 	constructor(config: MemoryDagConfig) {
 		if (config.memoryCostKb < 8) {
@@ -36,6 +36,12 @@ export class MemoryDag {
 		if (config.timeCost < 1) {
 			throw new Error("Time cost must be at least 1 pass");
 		}
+		if (config.outputLength < 1 || config.outputLength > 64) {
+			// SHA-512 produces 64 bytes. Requesting more silently truncates to 64,
+			// breaking domain separation between different outputLength values > 64.
+			// Callers who need longer output should run HKDF over the result.
+			throw new Error("outputLength must be between 1 and 64 bytes; use HKDF to expand the output further");
+		}
 
 		this.config = config;
 		this.totalBlocks = config.memoryCostKb;
@@ -44,7 +50,6 @@ export class MemoryDag {
 		// Allocate contiguous ArrayBuffer
 		this.memoryBuffer = new ArrayBuffer(this.totalBlocks * BLOCK_SIZE_BYTES);
 		this.blocks = new Array(this.totalBlocks);
-		this.addressBuffer = new Uint32Array(BLOCK_SIZE_WORDS);
 
 		for (let i = 0; i < this.totalBlocks; i++) {
 			this.blocks[i] = new Uint32Array(
@@ -68,13 +73,16 @@ export class MemoryDag {
 		config: MemoryDagConfig,
 		additionalData?: Uint8Array,
 	): Promise<Uint8Array> {
-		const header = new Uint8Array(16);
+		// 20-byte domain-separation header — all fields are full-width to prevent silent truncation.
+		// outputLength is uint32 (not uint8) so values > 255 are correctly domain-separated.
+		const header = new Uint8Array(20);
 		const view = new DataView(header.buffer);
 		view.setUint32(0, config.memoryCostKb, true);
 		view.setUint32(4, config.timeCost, true);
 		view.setUint32(8, config.parallelism, true);
 		view.setUint8(12, config.mode === "hybrid" ? 0 : config.mode === "independent" ? 1 : 2);
-		view.setUint8(13, config.outputLength);
+		// bytes 13–15: reserved / zero padding
+		view.setUint32(16, config.outputLength, true);
 
 		const payload = concatBytes(
 			header,
@@ -102,12 +110,16 @@ export class MemoryDag {
 				const target = this.getBlock(lane, idx);
 				const targetU8 = new Uint8Array(target.buffer, target.byteOffset, BLOCK_SIZE_BYTES);
 
-				let currentSeed = concatBytes(h0, blockHeader);
+				// Derive each 64-byte chunk independently using SHA-512(h0 || lane || idx || chunk).
+				// The original design re-hashed only the previous output (a simple hash chain),
+				// which dropped the lane/idx context after chunk 0 and weakened block diversity.
+				// Including the chunk counter here gives proper XOF-style domain separation.
 				for (let chunk = 0; chunk < BLOCK_SIZE_BYTES / 64; chunk++) {
-					const hash = await crypto.subtle.digest("SHA-512", currentSeed as unknown as BufferSource);
-					const hashBytes = new Uint8Array(hash);
-					targetU8.set(hashBytes, chunk * 64);
-					currentSeed = hashBytes;
+					const chunkTag = new Uint8Array(4);
+					new DataView(chunkTag.buffer).setUint32(0, chunk, true);
+					const chunkInput = concatBytes(h0, blockHeader, chunkTag);
+					const hash = await crypto.subtle.digest("SHA-512", chunkInput as unknown as BufferSource);
+					targetU8.set(new Uint8Array(hash), chunk * 64);
 				}
 			}
 		}
@@ -129,8 +141,9 @@ export class MemoryDag {
 
 		let pseudoRand: number;
 		if (isDataIndependent) {
-			// Multi-round ARX address generation preventing parallel speculative pre-fetching
-			const addrBlock = this.addressBuffer;
+			// Allocate a fresh block locally so concurrent lane execution never shares state.
+			// (The shared class-level addressBuffer has been removed for this reason.)
+			const addrBlock = new Uint32Array(BLOCK_SIZE_WORDS);
 			addrBlock[0] = pass;
 			addrBlock[1] = lane;
 			addrBlock[2] = index;
@@ -166,6 +179,12 @@ export class MemoryDag {
 	 * Executes the full multi-pass memory mixing graph
 	 */
 	async execute(h0: Uint8Array): Promise<Uint8Array> {
+		if (this.executed) {
+			// The memory arena is mutated in-place. Re-using the same instance produces
+			// incorrect output because initializeFirstBlocks only resets blocks 0 and 1.
+			throw new Error("MemoryDag instance has already been executed; create a new instance for each derivation");
+		}
+		this.executed = true;
 		await this.initializeFirstBlocks(h0);
 
 		const tempBlock = new Uint32Array(BLOCK_SIZE_WORDS);
@@ -178,7 +197,15 @@ export class MemoryDag {
 					const prevIdx = i === 0 ? this.blocksPerLane - 1 : i - 1;
 					const prevBlock = this.getBlock(lane, prevIdx);
 
-					const { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
+					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
+
+					// Prevent self-reference: mixBlocks reads from refBlock and writes to currentBlock.
+					// If refBlock === currentBlock, the XOR and permute operate on a partially-written
+					// array, producing incorrect and non-deterministic output.
+					if (refLane === lane && refIndex === i) {
+						refIndex = (i - 1 + this.blocksPerLane) % this.blocksPerLane;
+					}
+
 					const refBlock = this.getBlock(refLane, refIndex);
 					const currentBlock = this.getBlock(lane, i);
 

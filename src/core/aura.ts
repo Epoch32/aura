@@ -139,11 +139,15 @@ export class Aura {
 		// 1. Compute Memory-Hard DAG Output
 		const dagOutput = await Aura.deriveKey(pwdBytes, salt, options);
 
-		// 2. Compute Trapdoor Token & Public Anchor
-		const trapdoorToken = await TrapdoorEngine.computeTrapdoorToken(trapdoorKey, pwdBytes, salt);
-		const publicAnchor = await TrapdoorEngine.computePublicAnchor(dagOutput, trapdoorToken, salt);
+		// 2. Compute Public Anchor: HMAC-SHA256(K, LP(dagOutput, salt))
+		//    The anchor always commits to the *plaintext* dagOutput so that password
+		//    verification requires re-deriving MHF(candidate) and checking the anchor.
+		//    K is the HMAC key — an attacker without K cannot compute or verify the anchor.
+		const publicAnchor = await TrapdoorEngine.computePublicAnchor(dagOutput, trapdoorKey, salt);
 
-		// 3. Optional Vault Masking: dagOutput ^ HKDF(K, salt)
+		// 3. Optional Vault Masking: storedDagOutput = dagOutput ^ HKDF(K, salt)
+		//    Blinds the stored bytes so an attacker without K cannot run the MHF
+		//    offline against the stored dagOutput.
 		const storedDagOutput = isMasked
 			? await TrapdoorEngine.maskDagOutput(dagOutput, trapdoorKey, salt)
 			: dagOutput;
@@ -176,42 +180,37 @@ export class Aura {
 			const salt = base64UrlToBytes(hashOrEnvelope.salt);
 			const publicAnchor = base64UrlToBytes(hashOrEnvelope.publicAnchor);
 			const rawDagStored = base64UrlToBytes(hashOrEnvelope.dagOutput);
-
-			// If envelope is masked, offline unkeyed verification is blocked
-			if (hashOrEnvelope.masked) {
-				if (!trapdoorKey) {
-					return false; // Cannot verify masked envelope without trapdoor key
-				}
-				const unmaskedDag = await TrapdoorEngine.maskDagOutput(rawDagStored, trapdoorKey, salt);
-				return TrapdoorEngine.verifyWithTrapdoor(
-					pwdBytes,
-					salt,
-					publicAnchor,
-					trapdoorKey,
-					unmaskedDag,
-				);
-			}
-
-			// Fast Path: If trapdoorKey is provided, evaluate in O(1) (< 0.5 ms)
-			if (trapdoorKey) {
-				return TrapdoorEngine.verifyWithTrapdoor(
-					pwdBytes,
-					salt,
-					publicAnchor,
-					trapdoorKey,
-					rawDagStored,
-				);
-			}
-
-			// Slow Path: Recompute Memory DAG without trapdoor key
-			const computedDag = await Aura.deriveKey(pwdBytes, salt, {
+			const dagOptions = {
 				memoryCostKb: hashOrEnvelope.memoryCostKb,
 				timeCost: hashOrEnvelope.timeCost,
 				parallelism: hashOrEnvelope.parallelism,
 				mode: hashOrEnvelope.mode,
 				outputLength: rawDagStored.length,
-			});
+			};
 
+			// Masked Vault Mode: dagOutput is blinded under K.
+			// The anchor commits to the *plaintext* dagOutput, so we must re-derive the
+			// candidate DAG from the submitted password and check it against the anchor.
+			// Without K the attacker cannot check the anchor, and without the plaintext
+			// dagOutput they cannot compare directly — offline attacks are blocked.
+			if (hashOrEnvelope.masked) {
+				if (!trapdoorKey) {
+					return false; // Cannot verify masked envelope without trapdoor key
+				}
+				const candidateDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
+				return TrapdoorEngine.verifyWithTrapdoor(candidateDag, salt, publicAnchor, trapdoorKey);
+			}
+
+			// Unmasked + trapdoor key: the anchor commits to the plaintext dagOutput stored in
+			// the envelope, so we must re-derive the candidate DAG and verify via HMAC.
+			if (trapdoorKey) {
+				const candidateDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
+				return TrapdoorEngine.verifyWithTrapdoor(candidateDag, salt, publicAnchor, trapdoorKey);
+			}
+
+			// Slow Path (no trapdoor key): compare dagOutput directly.
+			// The anchor is HMAC-protected and cannot be verified without K.
+			const computedDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
 			return constantTimeEqual(rawDagStored, computedDag);
 		}
 
@@ -221,11 +220,20 @@ export class Aura {
 			return false;
 		}
 
-		// Parse params
+		// Validate version — reject hashes from unknown future versions
+		if (parts[1] !== `v=${Aura.VERSION}`) {
+			return false;
+		}
+
+		// Parse params — reject duplicate keys to prevent parameter injection attacks.
+		// e.g. "m=4096,...,m=64" must not silently downgrade memory cost to 64 KB.
 		const paramStr = parts[2];
 		const params = new Map<string, string>();
 		for (const kv of paramStr.split(",")) {
 			const [k, v] = kv.split("=");
+			if (params.has(k)) {
+				return false; // duplicate key — reject as malformed / tampered
+			}
 			params.set(k, v);
 		}
 
