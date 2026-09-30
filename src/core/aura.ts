@@ -197,6 +197,12 @@ export class Aura {
 		if (typeof hashOrEnvelope === "object") {
 			const salt = base64UrlToBytes(hashOrEnvelope.salt);
 			const publicAnchor = base64UrlToBytes(hashOrEnvelope.publicAnchor);
+			// Guard against oversized dagOutput blobs: check the approximate decoded length
+			// before allocating, since MemoryDag caps outputLength at 64 bytes.
+			const approxDecodedLen = Math.floor(hashOrEnvelope.dagOutput.length * 3 / 4);
+			if (approxDecodedLen < 1 || approxDecodedLen > 64) {
+				return false;
+			}
 			const rawDagStored = base64UrlToBytes(hashOrEnvelope.dagOutput);
 			const dagOptions = {
 				memoryCostKb: hashOrEnvelope.memoryCostKb,
