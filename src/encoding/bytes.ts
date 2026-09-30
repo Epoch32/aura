@@ -116,6 +116,12 @@ export function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 export function base64UrlToBytes(base64url: string): Uint8Array {
+	// Validate input uses only the base64url alphabet (A-Z, a-z, 0-9, -, _).
+	// atob() silently ignores whitespace and some illegal characters per the HTML spec;
+	// we reject them explicitly to stay consistent with hexToBytes's strict contract.
+	if (base64url.length > 0 && !/^[A-Za-z0-9\-_]+$/.test(base64url)) {
+		throw new Error("Invalid base64url string: contains illegal characters");
+	}
 	let base64 = base64url.replace(/-/g, "+").replace(/_/g, "/");
 	while (base64.length % 4 !== 0) {
 		base64 += "=";
