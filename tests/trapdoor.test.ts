@@ -34,6 +34,7 @@ describe("AURA Asymmetric Trapdoor", () => {
 			memoryCostKb: 64,
 			timeCost: 1,
 			mode: "hybrid",
+			masked: false, // explicitly unmasked so the unkeyed DAG fallback path is reachable
 		});
 
 		// Unkeyed verification (falls back to memory DAG evaluation)
