@@ -36,6 +36,9 @@ export class MemoryDag {
 		if (config.timeCost < 1) {
 			throw new Error("Time cost must be at least 1 pass");
 		}
+		if (Math.floor(config.memoryCostKb / config.parallelism) < 4) {
+			throw new Error("Memory cost per lane must be at least 4 KB (memoryCostKb >= 4 * parallelism)");
+		}
 		if (config.outputLength < 1 || config.outputLength > 64) {
 			// SHA-512 produces 64 bytes. Requesting more silently truncates to 64,
 			// breaking domain separation between different outputLength values > 64.
@@ -133,7 +136,6 @@ export class MemoryDag {
 		lane: number,
 		index: number,
 		prevBlock: Uint32Array,
-		h0: Uint8Array,
 	): { refLane: number; refIndex: number } {
 		const isFirstHalf = index < Math.floor(this.blocksPerLane / 2);
 		const isDataIndependent =
@@ -143,22 +145,14 @@ export class MemoryDag {
 		let pseudoRand: number;
 		if (isDataIndependent) {
 			// Allocate a fresh block locally so concurrent lane execution never shares state.
-			// (The shared class-level addressBuffer has been removed for this reason.)
 			const addrBlock = new Uint32Array(BLOCK_SIZE_WORDS);
 			addrBlock[0] = pass;
 			addrBlock[1] = lane;
 			addrBlock[2] = index;
 			addrBlock[3] = this.config.memoryCostKb;
 			addrBlock[4] = this.config.timeCost;
-			// Bind address block to the password via H0 so that the data-independent
-			// access pattern is unique per password, even across identical configs.
-			// Without this, an attacker could precompute the traversal graph once and
-			// reuse it for all cracking attempts against the same configuration.
-			// H0 is 64 bytes; read the first 8 words as little-endian uint32.
-			for (let w = 0; w < 8; w++) {
-				const off = w * 4;
-				addrBlock[w] ^= (h0[off] | (h0[off + 1] << 8) | (h0[off + 2] << 16) | (h0[off + 3] << 24)) >>> 0;
-			}
+			addrBlock[5] = this.config.parallelism;
+			addrBlock[6] = this.config.mode === "hybrid" ? 0 : 1;
 			permuteBlock(addrBlock);
 			pseudoRand = addrBlock[index % BLOCK_SIZE_WORDS] >>> 0;
 		} else {
@@ -166,8 +160,9 @@ export class MemoryDag {
 			pseudoRand = prevBlock[0] >>> 0;
 		}
 
-		// Available reference window size
-		const windowSize = pass === 0 ? index : this.blocksPerLane - 1;
+		// Available reference window excludes current block (i) and previous block (prevIdx)
+		// to prevent identity-block collapse where mixBlocks(prev, prev) yields prev unchanged.
+		const windowSize = pass === 0 ? index - 1 : this.blocksPerLane - 2;
 		if (windowSize <= 1) {
 			return { refLane: lane, refIndex: 0 };
 		}
@@ -207,13 +202,15 @@ export class MemoryDag {
 					const prevIdx = i === 0 ? this.blocksPerLane - 1 : i - 1;
 					const prevBlock = this.getBlock(lane, prevIdx);
 
-					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock, h0);
+					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
 
-					// Prevent self-reference: mixBlocks reads from refBlock and writes to currentBlock.
-					// If refBlock === currentBlock, the XOR and permute operate on a partially-written
-					// array, producing incorrect and non-deterministic output.
-					if (refLane === lane && refIndex === i) {
-						refIndex = (i - 1 + this.blocksPerLane) % this.blocksPerLane;
+					// Safety guard against currentBlock or prevBlock collision:
+					// mixBlocks reads from prevBlock and refBlock and writes to currentBlock.
+					// If refBlock === currentBlock, XOR/permute operates on partially-written state.
+					// If refBlock === prevBlock, prev ^ ref === 0, collapsing permute(0) to 0 and
+					// producing an unmixed identity clone (0 ^ prev = prev).
+					if (refLane === lane && (refIndex === i || refIndex === prevIdx)) {
+						refIndex = (i - 2 + this.blocksPerLane) % this.blocksPerLane;
 					}
 
 					const refBlock = this.getBlock(refLane, refIndex);

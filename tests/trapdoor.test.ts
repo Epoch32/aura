@@ -92,6 +92,14 @@ describe("AURA PHC Version Validation", () => {
 		const isValid = await Aura.verify("password", tampered);
 		expect(isValid).toBe(false);
 	});
+
+	it("should reject sealed envelopes with a mismatched version field", async () => {
+		const trapdoorKey = randomBytes(32);
+		const envelope = await Aura.sealWithTrapdoor("password", trapdoorKey, { memoryCostKb: 32, timeCost: 1 });
+		const tamperedEnv = { ...envelope, version: 99 };
+		const isValid = await Aura.verify("password", tamperedEnv, trapdoorKey);
+		expect(isValid).toBe(false);
+	});
 });
 
 describe("MemoryDag Safety Guards", () => {
@@ -113,6 +121,17 @@ describe("MemoryDag Safety Guards", () => {
 		expect(() => new MemoryDag({
 			memoryCostKb: 32, timeCost: 1, parallelism: 1, mode: "hybrid", outputLength: 0,
 		})).toThrow("outputLength must be between 1 and 64");
+	});
+
+	it("should throw when memoryCostKb is insufficient for the parallelism lanes", () => {
+		expect(() => new MemoryDag({
+			memoryCostKb: 8, timeCost: 1, parallelism: 8, mode: "hybrid", outputLength: 32,
+		})).toThrow("Memory cost per lane must be at least 4 KB");
+	});
+
+	it("should reject envelope or PHC with insufficient blocksPerLane in verify", async () => {
+		const res = await Aura.verify("pwd", "$aura$v=1$m=8,t=1,p=8,mode=hybrid$c2FsdDEyMzQ$abcdef");
+		expect(res).toBe(false);
 	});
 });
 

@@ -211,9 +211,11 @@ export class Aura {
 			// to prevent DoS via enormous allocation, CPU exhaustion, or silent mode degradation.
 			const VALID_ENV_MODES: AuraMode[] = ["hybrid", "independent", "dependent"];
 			if (
+				hashOrEnvelope.version !== Aura.VERSION ||
 				!Number.isInteger(hashOrEnvelope.memoryCostKb) || hashOrEnvelope.memoryCostKb < 8   || hashOrEnvelope.memoryCostKb > 65536 ||
 				!Number.isInteger(hashOrEnvelope.timeCost)     || hashOrEnvelope.timeCost < 1        || hashOrEnvelope.timeCost > 64 ||
 				!Number.isInteger(hashOrEnvelope.parallelism)  || hashOrEnvelope.parallelism < 1     || hashOrEnvelope.parallelism > 16 ||
+				Math.floor(hashOrEnvelope.memoryCostKb / hashOrEnvelope.parallelism) < 4 ||
 				!VALID_ENV_MODES.includes(hashOrEnvelope.mode)
 			) {
 				return false;
@@ -286,7 +288,8 @@ export class Aura {
 		if (
 			Number.isNaN(memoryCostKb) || memoryCostKb < 8 || memoryCostKb > 65536 ||
 			Number.isNaN(timeCost)     || timeCost < 1     || timeCost > 64 ||
-			Number.isNaN(parallelism)  || parallelism < 1  || parallelism > 16
+			Number.isNaN(parallelism)  || parallelism < 1  || parallelism > 16 ||
+			Math.floor(memoryCostKb / parallelism) < 4
 		) {
 			return false;
 		}

@@ -67,4 +67,32 @@ describe("AURA Memory DAG", () => {
 
 		expect(out.length).toBe(32);
 	});
+
+	it("should never select prevBlock or currentBlock as refBlock across passes", async () => {
+		const config: MemoryDagConfig = {
+			memoryCostKb: 64,
+			timeCost: 2,
+			parallelism: 1,
+			mode: "hybrid",
+			outputLength: 32,
+		};
+
+		const h0 = await MemoryDag.computeInitialSeed(password, salt, config);
+		const dag = new MemoryDag(config);
+
+		// Intercept computeReferenceIndex to verify no collisions with i or prevIdx
+		const origCompute = dag["computeReferenceIndex"].bind(dag);
+		let checkedLookups = 0;
+		dag["computeReferenceIndex"] = function (pass: number, lane: number, i: number, prevBlock: Uint32Array) {
+			const res = origCompute(pass, lane, i, prevBlock);
+			const prevIdx = i === 0 ? dag.blocksPerLane - 1 : i - 1;
+			expect(res.refIndex).not.toBe(i);
+			expect(res.refIndex).not.toBe(prevIdx);
+			checkedLookups++;
+			return res;
+		};
+
+		await dag.execute(h0);
+		expect(checkedLookups).toBeGreaterThan(50);
+	});
 });

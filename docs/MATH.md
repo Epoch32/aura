@@ -77,20 +77,25 @@ For block $\mathcal{M}[l, i]$ at pass $t$, a pseudo-random value $J \in \mathbb{
 1. **Phase 1: Data-Independent (Side-Channel Immune)**
    Used when $\text{mode} = \text{independent}$ or ($\text{mode} = \text{hybrid}$, $t = 0$, and $i < N/2$).
 
-   A fresh 256-word address block $\mathcal{A}$ is constructed and permuted:
-   $$\mathcal{A}[0..4] = (t,\; l,\; i,\; M,\; T)$$
-   $$\mathcal{A}[w] \;\mathrel{\oplus}=\; \text{uint32LE}(H_0[4w\ldots 4w+3]) \quad \text{for } w \in [0, 7]$$
+   A fresh 256-word address block $\mathcal{A}$ is constructed and permuted from public execution parameters:
+   $$\mathcal{A}[0..6] = (t,\; l,\; i,\; M,\; T,\; p,\; \text{mode})$$
    $$\mathcal{A} \leftarrow \text{Permute}_{2D}(\mathcal{A})$$
    $$J_{\text{indep}} = \mathcal{A}[i \bmod 256]$$
 
-   The XOR of $H_0$ words into the address block binds the data-independent access pattern to the password. Without this binding, an attacker could precompute the traversal graph once per configuration and reuse it across all cracking attempts.
+   Because $\mathcal{A}$ is derived exclusively from public configuration parameters and counters (without depending on secret password material), memory access patterns during Phase 1 remain strictly independent of the password, providing complete immunity against cache-timing and memory bus side-channel attacks.
 
 2. **Phase 2: Data-Dependent (GPU / ASIC Resistant)**
    Used when $\text{mode} = \text{dependent}$ or ($\text{mode} = \text{hybrid}$, and ($t > 0$ or $i \ge N/2$)):
    $$J_{\text{dep}} = \mathcal{M}[l, i-1][0]$$
 
-### 4.1 Quadratic Window Biasing
-To defeat Time-Memory Trade-Off (TMTO) graph-pebbling shortcuts:
+### 4.1 Quadratic Window Biasing & Collision Exclusion
+To defeat Time-Memory Trade-Off (TMTO) graph-pebbling shortcuts while preventing zero-collapse identity mixing ($\mathcal{B}_{\text{prev}} \oplus \mathcal{B}_{\text{ref}} = 0$):
+
+$$\text{windowSize} = \begin{cases}
+i - 1 & \text{if } t = 0 \\
+N - 2 & \text{if } t > 0
+\end{cases}$$
+
 $$x = \lfloor (J \cdot J) / 2^{32} \rfloor \bmod 2^{32}$$
 $$y = \lfloor (\text{windowSize} \cdot x) / 2^{32} \rfloor$$
 $$\text{offset} = \text{windowSize} - 1 - y$$
@@ -99,7 +104,7 @@ $$j = \begin{cases}
 (i + 1 + \text{offset}) \bmod N & \text{if } t > 0
 \end{cases}$$
 
-Self-reference ($j = i$) is resolved by falling back to $j = (i - 1) \bmod N$.
+Excluding both $i$ (current block) and $i - 1$ (previous block) from the reference window guarantees that $\mathcal{B}_{\text{ref}} \ne \mathcal{B}_{\text{prev}}$ and $\mathcal{B}_{\text{ref}} \ne \mathcal{B}_{\text{current}}$, ensuring that 100% of matrix blocks undergo non-linear ARX permutation and diffusion.
 
 This creates an exponential bias towards recently computed blocks, making memory eviction in pebbling games mathematically suboptimal for an attacker.
 
@@ -140,7 +145,9 @@ Let $\text{LP}(x_1, \ldots, x_n)$ denote **length-prefixed encoding** as defined
 | Salt $S$ | $\|S\| \ge 8$ bytes | Prevents trivially rainbow-tabled salts |
 | Trapdoor key $K$ | $\|K\| \ge 16$ bytes | Ensures at least 128-bit HMAC security |
 | Memory cost $M$ | $8 \le M \le 65536$ (KB) | Prevents DoS via unbounded allocation |
+| Memory per lane | $\lfloor M / p \rfloor \ge 4$ KB | Ensures minimum lane depth for DAG mixing passes |
 | Time cost $T$ | $1 \le T \le 64$ | Prevents CPU exhaustion |
 | Parallelism $p$ | $1 \le p \le 16$ | Prevents oversized lane allocation |
 | Output length $L_{\text{out}}$ | $1 \le L_{\text{out}} \le 64$ bytes | SHA-512 output bound; use HKDF to expand further |
 | Mode | ∈ {hybrid, independent, dependent} | Prevents silent degradation to unknown behaviour |
+| Envelope version | Equal to current `Aura.VERSION` | Prevents version mismatch or downgrade attacks |

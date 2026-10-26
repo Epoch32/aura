@@ -36,7 +36,7 @@ flowchart TD
     SEED --> INIT["initializeFirstBlocks()\nBlock[l,0], Block[l,1] per lane\nSHA-512(H0 ‖ lane ‖ idx ‖ chunk)"]
 
     subgraph Passes["Multi-Pass Memory DAG"]
-        INIT --> P0_IND["Pass 0 (First Half): Data-Independent Indexing\nARX-Expand(pass, lane, idx, M, T) ⊕ H0[0..7]"]
+        INIT --> P0_IND["Pass 0 (First Half): Data-Independent Indexing\nARX-Expand(pass, lane, idx, M, T, p, mode)"]
         P0_IND --> P0_DEP["Pass 0 (Second Half): Data-Dependent Indexing\nJ = Block[l, i-1][0]"]
         P0_DEP --> P_SUB["Passes 1..T: Full Data-Dependent Memory Mixing"]
     end
@@ -69,9 +69,11 @@ All public API entry points enforce strict input constraints before any cryptogr
 | Salt ≥ 8 bytes | `deriveKey()`, `hash()`, `sealWithTrapdoor()` | Throws |
 | Trapdoor key ≥ 16 bytes | `sealWithTrapdoor()`, `TrapdoorEngine` | Throws |
 | `memoryCostKb` in [8, 65536] | `verify()` (PHC + envelope), `MemoryDag` constructor | Returns `false` / throws |
+| `memoryCostKb >= 4 * parallelism` | `verify()` (PHC + envelope), `MemoryDag` constructor | Returns `false` / throws |
 | `timeCost` in [1, 64] | `verify()` (PHC + envelope) | Returns `false` |
 | `parallelism` in [1, 16] | `verify()` (PHC + envelope) | Returns `false` |
 | `mode` ∈ {hybrid, independent, dependent} | `verify()` (PHC + envelope) | Returns `false` |
+| Envelope `version === Aura.VERSION` | `verify()` (envelope) | Returns `false` |
 | `dagOutput` / hash decoded length ≤ 64 bytes | `verify()` (PHC + envelope) — pre-decode check | Returns `false` |
 | Strict base64url alphabet | `base64UrlToBytes()` | Throws |
 | Strict hex alphabet | `hexToBytes()` | Throws |
@@ -87,9 +89,13 @@ All exceptions thrown inside `verify()` are caught and returned as `false` — c
 
 All multi-field HMAC and SHA-512 inputs use `encodeLengthPrefixed()` (4-byte LE length prefix per field) to prevent ambiguous-concatenation attacks where `(pwd="abc", salt="defg")` and `(pwd="abcd", salt="efg")` would otherwise produce identical byte streams.
 
-### 4.4 Password-Bound Address Block
+### 4.4 Data-Independent Side-Channel Immune Address Generation
 
-In data-independent indexing mode, the 256-word address block is initialized with `(pass, lane, index, memoryCostKb, timeCost)` and then XOR'd with the first 8 uint32 words of H0 before permutation. This binds the access pattern to the password, preventing an attacker from precomputing the traversal graph once and reusing it across all cracking attempts against the same configuration.
+In data-independent indexing mode (Phase 1), the 256-word address block is initialized strictly with public execution parameters `(pass, lane, index, memoryCostKb, timeCost, parallelism, mode)` without secret password material. This ensures that memory access addresses during Phase 1 produce identical cache access patterns regardless of the password, eliminating cache-timing side channels (e.g. Flush+Reload) in shared edge or multi-tenant environments.
+
+### 4.5 Collision-Free Reference Indexing
+
+The reference window excludes both the current block $i$ and the immediate predecessor $i - 1$. This prevents identity-block collapse where `mixBlocks(prev, prev)` would collapse `prev ^ ref` to 0 and output `prev` unchanged, ensuring that 100% of memory blocks undergo cryptographic ARX permutation and non-linear diffusion.
 
 ### 4.5 Masked Vault Mode (Default)
 

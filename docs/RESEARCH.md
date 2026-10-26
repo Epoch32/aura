@@ -25,8 +25,8 @@ Era 3: Hybrid Memory-Hard Standard (2015 - Present)
         ▼
 Era 4: Asymmetric Memory-Hard Function (AURA, 2026)
   Innovation: 32-bit ARX 2D mixing + WebCrypto hardware acceleration + O(1) Passkey Trapdoors.
-  Hardening:  Password-bound address blocks, length-prefixed domain separation, masked vault
-              mode on by default, strict input validation, and arena zeroing after derivation.
+  Hardening:  Data-independent side-channel immune Phase 1, length-prefixed domain separation,
+              masked vault mode on by default, strict input validation, and arena zeroing.
 ```
 
 ---
@@ -42,7 +42,7 @@ Era 4: Asymmetric Memory-Hard Function (AURA, 2026)
 ### 2.2 Time-Memory Trade-Offs (TMTO) & Pebbling Bounds
 * **Alwen, J., Blocki, J., & Harsha, B. (2017)**. *Tight Complexity Bounds for Parallel Graph Pebbling and Memory-Hard Functions*. ACM CCS.
 * **Biryukov, A., & Khovratovich, D. (2015)**. *Tradeoff Attacks on Memory-Hard Functions*. IACR Cryptology ePrint Archive.
-  * *Contribution Used in AURA*: Proving that uniform linear modulo indexing ($J \bmod \text{window}$) enables attackers to pebble graphs with only $25\%$ RAM. AURA adopts the **quadratic non-uniform window mapping** ($x = \lfloor J^2 / 2^{32} \rfloor$), proving that discarding recent blocks requires exponential recomputation time. AURA additionally binds the data-independent access pattern to the password via $H_0$, preventing a precomputed traversal graph from being reused across cracking attempts.
+  * *Contribution Used in AURA*: Proving that uniform linear modulo indexing ($J \bmod \text{window}$) enables attackers to pebble graphs with only $25\%$ RAM. AURA adopts the **quadratic non-uniform window mapping** ($x = \lfloor J^2 / 2^{32} \rfloor$), proving that discarding recent blocks requires exponential recomputation time. AURA additionally excludes immediate predecessors from the reference set, ensuring no identity-block collapses occur.
 
 ### 2.3 Asymmetric Proofs of Work & Trapdoors
 * **Biryukov, A., & Khovratovich, D. (2016)**. *Asymmetric Proof-of-Work Based on the Generalized Birthday Problem*. Ledger Journal.
