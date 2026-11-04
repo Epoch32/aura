@@ -132,8 +132,28 @@ export class MemoryDag {
 		}
 	}
 
+	private static readonly SYNC_POINTS = 4;
+
+	private getSliceBounds(slice: number): { sliceStart: number; sliceEnd: number } {
+		const sliceStart = Math.floor((slice * this.blocksPerLane) / MemoryDag.SYNC_POINTS);
+		const sliceEnd = Math.floor(((slice + 1) * this.blocksPerLane) / MemoryDag.SYNC_POINTS);
+		return { sliceStart, sliceEnd };
+	}
+
+	private getSliceForIndex(index: number): { slice: number; sliceStart: number; sliceEnd: number } {
+		for (let s = 0; s < MemoryDag.SYNC_POINTS; s++) {
+			const { sliceStart, sliceEnd } = this.getSliceBounds(s);
+			if (index >= sliceStart && index < sliceEnd) {
+				return { slice: s, sliceStart, sliceEnd };
+			}
+		}
+		const { sliceStart, sliceEnd } = this.getSliceBounds(MemoryDag.SYNC_POINTS - 1);
+		return { slice: MemoryDag.SYNC_POINTS - 1, sliceStart, sliceEnd };
+	}
+
 	/**
-	 * Computes the reference block index j using Quadratic Non-Uniform Mapping (TMTO Defense)
+	 * Computes the reference block index j and lane using Quadratic Non-Uniform Mapping (TMTO Defense)
+	 * and Argon2-style 4-slice cross-lane synchronization.
 	 */
 	private computeReferenceIndex(
 		pass: number,
@@ -141,12 +161,14 @@ export class MemoryDag {
 		index: number,
 		prevBlock: Uint32Array,
 	): { refLane: number; refIndex: number } {
-		const isFirstHalf = index < Math.floor(this.blocksPerLane / 2);
+		const { slice, sliceStart, sliceEnd } = this.getSliceForIndex(index);
+		const isFirstHalf = slice < MemoryDag.SYNC_POINTS / 2;
 		const isDataIndependent =
 			this.config.mode === "independent" ||
 			(this.config.mode === "hybrid" && pass === 0 && isFirstHalf);
 
 		let pseudoRand: number;
+		let laneRand: number;
 		if (isDataIndependent) {
 			const addrSegment = Math.floor(index / BLOCK_SIZE_WORDS);
 			if (
@@ -173,12 +195,38 @@ export class MemoryDag {
 				this.cachedAddrSegment = addrSegment;
 			}
 			pseudoRand = this.addrBlock[index % BLOCK_SIZE_WORDS] >>> 0;
+			laneRand = this.addrBlock[(index + 128) % BLOCK_SIZE_WORDS] >>> 0;
 		} else {
-			// Data-dependent index derived from the first word of the previous block
+			// Data-dependent index and lane derived from the first two words of the previous block
 			pseudoRand = prevBlock[0] >>> 0;
+			laneRand = prevBlock[1] >>> 0;
 		}
 
-		// Available reference window excludes current block (i) and previous block (prevIdx)
+		// Cross-lane selection: in pass 0 slice 0, lanes reference only themselves;
+		// in all subsequent slices/passes, lanes mix across all parallelism lanes.
+		const refLane =
+			this.config.parallelism > 1 && (pass > 0 || slice > 0)
+				? laneRand % this.config.parallelism
+				: lane;
+
+		if (refLane !== lane) {
+			// Cross-lane reference window: exclude the active slice [sliceStart, sliceEnd) so
+			// all lanes within a slice see identical committed state regardless of lane evaluation order.
+			const crossWindow =
+				pass === 0 ? sliceStart : this.blocksPerLane - (sliceEnd - sliceStart);
+			if (crossWindow <= 1) {
+				return { refLane, refIndex: 0 };
+			}
+			const jBig = BigInt(pseudoRand >>> 0);
+			const x = (jBig * jBig) >> 32n;
+			const y = (BigInt(crossWindow) * x) >> 32n;
+			const offset = crossWindow - 1 - Number(y);
+			const refIndex =
+				pass === 0 ? offset : (sliceEnd + offset) % this.blocksPerLane;
+			return { refLane, refIndex };
+		}
+
+		// Same-lane reference window excludes current block (i) and previous block (prevIdx)
 		// to prevent identity-block collapse where mixBlocks(prev, prev) yields prev unchanged.
 		const windowSize = pass === 0 ? index - 1 : this.blocksPerLane - 2;
 		if (windowSize <= 1) {
@@ -199,7 +247,7 @@ export class MemoryDag {
 	}
 
 	/**
-	 * Executes the full multi-pass memory mixing graph
+	 * Executes the full multi-pass memory mixing graph across synchronized slices
 	 */
 	async execute(h0: Uint8Array): Promise<Uint8Array> {
 		if (this.executed) {
@@ -213,34 +261,35 @@ export class MemoryDag {
 		const tempBlock = new Uint32Array(BLOCK_SIZE_WORDS);
 
 		for (let pass = 0; pass < this.config.timeCost; pass++) {
-			for (let lane = 0; lane < this.config.parallelism; lane++) {
-				const startIdx = pass === 0 ? 2 : 0;
+			for (let slice = 0; slice < MemoryDag.SYNC_POINTS; slice++) {
+				const { sliceStart, sliceEnd } = this.getSliceBounds(slice);
 
-				for (let i = startIdx; i < this.blocksPerLane; i++) {
-					const prevIdx = i === 0 ? this.blocksPerLane - 1 : i - 1;
-					const prevBlock = this.getBlock(lane, prevIdx);
+				for (let lane = 0; lane < this.config.parallelism; lane++) {
+					const startIdx = pass === 0 && slice === 0 ? Math.max(2, sliceStart) : sliceStart;
 
-					let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
+					for (let i = startIdx; i < sliceEnd; i++) {
+						const prevIdx = i === 0 ? this.blocksPerLane - 1 : i - 1;
+						const prevBlock = this.getBlock(lane, prevIdx);
 
-					// Safety guard against currentBlock or prevBlock collision:
-					// mixBlocks reads from prevBlock and refBlock and writes to currentBlock.
-					// If refBlock === currentBlock, XOR/permute operates on partially-written state.
-					// If refBlock === prevBlock, prev ^ ref === 0, collapsing permute(0) to 0 and
-					// producing an unmixed identity clone (0 ^ prev = prev).
-					if (refLane === lane && (refIndex === i || refIndex === prevIdx)) {
-						refIndex = (i - 2 + this.blocksPerLane) % this.blocksPerLane;
-					}
+						let { refLane, refIndex } = this.computeReferenceIndex(pass, lane, i, prevBlock);
 
-					const refBlock = this.getBlock(refLane, refIndex);
-					const currentBlock = this.getBlock(lane, i);
+						// Safety guard against currentBlock or prevBlock collision in the same lane:
+						// mixBlocks reads from prevBlock and refBlock and writes to currentBlock.
+						if (refLane === lane && (refIndex === i || refIndex === prevIdx)) {
+							refIndex = (i - 2 + this.blocksPerLane) % this.blocksPerLane;
+						}
 
-					if (pass === 0) {
-						mixBlocks(prevBlock, refBlock, currentBlock);
-					} else {
-						// On subsequent passes, mix and XOR with existing content
-						mixBlocks(prevBlock, refBlock, tempBlock);
-						for (let k = 0; k < BLOCK_SIZE_WORDS; k++) {
-							currentBlock[k] ^= tempBlock[k];
+						const refBlock = this.getBlock(refLane, refIndex);
+						const currentBlock = this.getBlock(lane, i);
+
+						if (pass === 0) {
+							mixBlocks(prevBlock, refBlock, currentBlock);
+						} else {
+							// On subsequent passes, mix and XOR with existing content
+							mixBlocks(prevBlock, refBlock, tempBlock);
+							for (let k = 0; k < BLOCK_SIZE_WORDS; k++) {
+								currentBlock[k] ^= tempBlock[k];
+							}
 						}
 					}
 				}

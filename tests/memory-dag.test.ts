@@ -52,10 +52,10 @@ describe("AURA Memory DAG", () => {
 		expect(outH).not.toEqual(outD);
 	});
 
-	it("should execute across multiple parallelism lanes", async () => {
+	it("should execute across multiple parallelism lanes with cross-lane mixing", async () => {
 		const multiLaneCfg: MemoryDagConfig = {
 			memoryCostKb: 64,
-			timeCost: 1,
+			timeCost: 2,
 			parallelism: 2,
 			mode: "hybrid",
 			outputLength: 32,
@@ -63,9 +63,21 @@ describe("AURA Memory DAG", () => {
 
 		const h0 = await MemoryDag.computeInitialSeed(password, salt, multiLaneCfg);
 		const dag = new MemoryDag(multiLaneCfg);
+
+		const origCompute = dag["computeReferenceIndex"].bind(dag);
+		let crossLaneLookups = 0;
+		dag["computeReferenceIndex"] = function (pass: number, lane: number, i: number, prevBlock: Uint32Array) {
+			const res = origCompute(pass, lane, i, prevBlock);
+			if (res.refLane !== lane) {
+				crossLaneLookups++;
+			}
+			return res;
+		};
+
 		const out = await dag.execute(h0);
 
 		expect(out.length).toBe(32);
+		expect(crossLaneLookups).toBeGreaterThan(10);
 	});
 
 	it("should never select prevBlock or currentBlock as refBlock across passes", async () => {
