@@ -133,6 +133,23 @@ describe("MemoryDag Safety Guards", () => {
 		const res = await Aura.verify("pwd", "$aura$v=1$m=8,t=1,p=8,mode=hybrid$c2FsdDEyMzQ$abcdef");
 		expect(res).toBe(false);
 	});
+
+	it("should reject NaN, non-integer, and out-of-range parameters in MemoryDag and Aura.hash", async () => {
+		expect(() => new MemoryDag({
+			memoryCostKb: 32, timeCost: Number.NaN, parallelism: 1, mode: "hybrid", outputLength: 32,
+		})).toThrow("Time cost must be an integer");
+
+		expect(() => new MemoryDag({
+			memoryCostKb: 32, timeCost: 1, parallelism: 1, mode: "hybrid", outputLength: Number.NaN,
+		})).toThrow("outputLength must be between 1 and 64");
+
+		expect(() => new MemoryDag({
+			memoryCostKb: 32.5, timeCost: 1, parallelism: 1, mode: "hybrid", outputLength: 32,
+		})).toThrow("Memory cost must be an integer");
+
+		await expect(Aura.hash("password", { timeCost: Number.NaN })).rejects.toThrow("Time cost must be an integer");
+		await expect(Aura.hash("password", { outputLength: Number.NaN })).rejects.toThrow("outputLength must be between 1 and 64");
+	});
 });
 
 describe("TrapdoorEngine Key Length Enforcement", () => {

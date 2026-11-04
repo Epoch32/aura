@@ -30,25 +30,32 @@ export class MemoryDag {
 	private cachedAddrSegment = -1;
 	private executed = false; // guards against accidental re-use of the same instance
 
-	constructor(config: MemoryDagConfig) {
-		if (config.memoryCostKb < 8) {
-			throw new Error("Memory cost must be at least 8 KB");
+	static validateConfig(config: MemoryDagConfig): void {
+		if (!Number.isInteger(config.memoryCostKb) || config.memoryCostKb < 8 || config.memoryCostKb > 65536) {
+			throw new Error("Memory cost must be an integer between 8 and 65536 KB");
 		}
-		if (config.parallelism < 1) {
-			throw new Error("Parallelism must be at least 1");
+		if (!Number.isInteger(config.parallelism) || config.parallelism < 1 || config.parallelism > 16) {
+			throw new Error("Parallelism must be an integer between 1 and 16");
 		}
-		if (config.timeCost < 1) {
-			throw new Error("Time cost must be at least 1 pass");
+		if (!Number.isInteger(config.timeCost) || config.timeCost < 1 || config.timeCost > 64) {
+			throw new Error("Time cost must be an integer between 1 and 64 passes");
 		}
 		if (Math.floor(config.memoryCostKb / config.parallelism) < 4) {
 			throw new Error("Memory cost per lane must be at least 4 KB (memoryCostKb >= 4 * parallelism)");
 		}
-		if (config.outputLength < 1 || config.outputLength > 64) {
+		if (!Number.isInteger(config.outputLength) || config.outputLength < 1 || config.outputLength > 64) {
 			// SHA-512 produces 64 bytes. Requesting more silently truncates to 64,
 			// breaking domain separation between different outputLength values > 64.
 			// Callers who need longer output should run HKDF over the result.
 			throw new Error("outputLength must be between 1 and 64 bytes; use HKDF to expand the output further");
 		}
+		if (config.mode !== "hybrid" && config.mode !== "independent" && config.mode !== "dependent") {
+			throw new Error('mode must be "hybrid", "independent", or "dependent"');
+		}
+	}
+
+	constructor(config: MemoryDagConfig) {
+		MemoryDag.validateConfig(config);
 
 		this.config = config;
 		this.totalBlocks = config.memoryCostKb;
@@ -80,6 +87,8 @@ export class MemoryDag {
 		config: MemoryDagConfig,
 		additionalData?: Uint8Array,
 	): Promise<Uint8Array> {
+		MemoryDag.validateConfig(config);
+
 		// 20-byte domain-separation header — all fields are full-width to prevent silent truncation.
 		// outputLength is uint32 (not uint8) so values > 255 are correctly domain-separated.
 		const header = new Uint8Array(20);
