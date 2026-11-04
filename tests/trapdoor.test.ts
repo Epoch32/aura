@@ -93,9 +93,15 @@ describe("AURA Asymmetric Trapdoor", () => {
 
 		const tamperedDag = {
 			...envelope,
-			dagOutput: envelope.dagOutput.slice(0, -1) + (envelope.dagOutput.endsWith("A") ? "B" : "A"),
+			dagOutput: (envelope.dagOutput.startsWith("A") ? "B" : "A") + envelope.dagOutput.slice(1),
 		};
 		expect(await Aura.verify(password, tamperedDag, trapdoorKey)).toBe(false);
+
+		const tamperedTrailing = {
+			...envelope,
+			dagOutput: envelope.dagOutput.slice(0, -1) + (envelope.dagOutput.endsWith("A") ? "B" : "A"),
+		};
+		expect(await Aura.verify(password, tamperedTrailing, trapdoorKey)).toBe(false);
 
 		const tamperedCost = { ...envelope, memoryCostKb: 32 };
 		expect(await Aura.verify(password, tamperedCost, trapdoorKey)).toBe(false);
