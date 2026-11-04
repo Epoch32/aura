@@ -53,41 +53,49 @@ function quarterRound(state: Uint32Array, a: number, b: number, c: number, d: nu
  * Defeats divide-and-conquer / bit-slice GPU/ASIC attacks.
  */
 export function permuteBlock(block: Uint32Array): void {
-	// 1. Row Rounds: Permute each 16-word sub-block
+	// 1. Row Rounds: Permute each 16-word row of the 16x16 word matrix
 	for (let offset = 0; offset < BLOCK_SIZE_WORDS; offset += 16) {
-		// Column rounds within sub-block
+		// Column rounds within 16-word row
 		quarterRound(block, offset + 0, offset + 4, offset + 8, offset + 12);
 		quarterRound(block, offset + 1, offset + 5, offset + 9, offset + 13);
 		quarterRound(block, offset + 2, offset + 6, offset + 10, offset + 14);
 		quarterRound(block, offset + 3, offset + 7, offset + 11, offset + 15);
 
-		// Diagonal rounds within sub-block
+		// Diagonal rounds within 16-word row
 		quarterRound(block, offset + 0, offset + 5, offset + 10, offset + 15);
 		quarterRound(block, offset + 1, offset + 6, offset + 11, offset + 12);
 		quarterRound(block, offset + 2, offset + 7, offset + 8, offset + 13);
 		quarterRound(block, offset + 3, offset + 4, offset + 9, offset + 14);
 	}
 
-	// 2. Cross-Block Column Rounds: Strides of 64 words across the entire 1KB block
-	for (let i = 0; i < 64; i += 4) {
-		quarterRound(block, i + 0, i + 64, i + 128, i + 192);
-		quarterRound(block, i + 1, i + 65, i + 129, i + 193);
-		quarterRound(block, i + 2, i + 66, i + 130, i + 194);
-		quarterRound(block, i + 3, i + 67, i + 131, i + 195);
+	// 2. Column Rounds: Permute each 16-word column across all 16 rows (stride 16)
+	for (let col = 0; col < 16; col++) {
+		quarterRound(block, col + 0, col + 64, col + 128, col + 192);
+		quarterRound(block, col + 16, col + 80, col + 144, col + 208);
+		quarterRound(block, col + 32, col + 96, col + 160, col + 224);
+		quarterRound(block, col + 48, col + 112, col + 176, col + 240);
+
+		quarterRound(block, col + 0, col + 80, col + 160, col + 240);
+		quarterRound(block, col + 16, col + 96, col + 176, col + 192);
+		quarterRound(block, col + 32, col + 112, col + 128, col + 208);
+		quarterRound(block, col + 48, col + 64, col + 144, col + 224);
 	}
 
-	// 3. Cross-Block Diagonal Rounds: Non-linear diffusion across all chunks
-	for (let i = 0; i < 64; i += 4) {
-		quarterRound(block, i + 0, ((i + 1) % 64) + 64, ((i + 2) % 64) + 128, ((i + 3) % 64) + 192);
-		quarterRound(block, i + 1, ((i + 2) % 64) + 64, ((i + 3) % 64) + 128, ((i + 0) % 64) + 192);
-		quarterRound(block, i + 2, ((i + 3) % 64) + 64, ((i + 0) % 64) + 128, ((i + 1) % 64) + 192);
-		quarterRound(block, i + 3, ((i + 0) % 64) + 64, ((i + 1) % 64) + 128, ((i + 2) % 64) + 192);
+	// 3. Cross-Block Diagonal Rounds: Non-linear diffusion across shifted columns and row groups
+	for (let col = 0; col < 16; col++) {
+		const c1 = ((col + 1) & 15) + 16;
+		const c2 = ((col + 2) & 15) + 32;
+		const c3 = ((col + 3) & 15) + 48;
+		quarterRound(block, col, c1 + 64, c2 + 128, c3 + 192);
+		quarterRound(block, col + 16, c2 + 64, c3 + 128, col + 192);
+		quarterRound(block, col + 32, c3 + 64, col + 128, c1 + 192);
+		quarterRound(block, col + 48, col + 64, c1 + 128, c2 + 192);
 	}
 }
 
 /**
- * AURA Core Block Mixer:
- * out = Permute(prev ^ ref) ^ prev
+ * AURA Core Block Mixer (Davies-Meyer Feed-Forward):
+ * out = Permute(prev ^ ref) ^ prev ^ ref
  */
 export function mixBlocks(
 	prevBlock: Uint32Array,
@@ -102,8 +110,8 @@ export function mixBlocks(
 	// 2. Full 2D Permutation across all 1024 bytes
 	permuteBlock(outBlock);
 
-	// 3. Feed-forward XOR: out ^= prev
+	// 3. Davies-Meyer feed-forward XOR: out ^= (prev ^ ref)
 	for (let i = 0; i < BLOCK_SIZE_WORDS; i++) {
-		outBlock[i] ^= prevBlock[i];
+		outBlock[i] ^= prevBlock[i] ^ refBlock[i];
 	}
 }

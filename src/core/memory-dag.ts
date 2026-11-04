@@ -24,6 +24,10 @@ export class MemoryDag {
 
 	private memoryBuffer: ArrayBuffer;
 	private blocks: Uint32Array[];
+	private addrBlock = new Uint32Array(BLOCK_SIZE_WORDS);
+	private cachedAddrPass = -1;
+	private cachedAddrLane = -1;
+	private cachedAddrSegment = -1;
 	private executed = false; // guards against accidental re-use of the same instance
 
 	constructor(config: MemoryDagConfig) {
@@ -144,17 +148,31 @@ export class MemoryDag {
 
 		let pseudoRand: number;
 		if (isDataIndependent) {
-			// Allocate a fresh block locally so concurrent lane execution never shares state.
-			const addrBlock = new Uint32Array(BLOCK_SIZE_WORDS);
-			addrBlock[0] = pass;
-			addrBlock[1] = lane;
-			addrBlock[2] = index;
-			addrBlock[3] = this.config.memoryCostKb;
-			addrBlock[4] = this.config.timeCost;
-			addrBlock[5] = this.config.parallelism;
-			addrBlock[6] = this.config.mode === "hybrid" ? 0 : 1;
-			permuteBlock(addrBlock);
-			pseudoRand = addrBlock[index % BLOCK_SIZE_WORDS] >>> 0;
+			const addrSegment = Math.floor(index / BLOCK_SIZE_WORDS);
+			if (
+				this.cachedAddrPass !== pass ||
+				this.cachedAddrLane !== lane ||
+				this.cachedAddrSegment !== addrSegment
+			) {
+				this.addrBlock.fill(0);
+				// ChaCha nothing-up-my-sleeve constants ("expand 32-byte k") prevent zero fixed-points
+				this.addrBlock[0] = 0x61707865;
+				this.addrBlock[1] = 0x3320646e;
+				this.addrBlock[2] = 0x79622d32;
+				this.addrBlock[3] = 0x6b206574;
+				this.addrBlock[4] = pass;
+				this.addrBlock[5] = lane;
+				this.addrBlock[6] = addrSegment;
+				this.addrBlock[7] = this.config.memoryCostKb;
+				this.addrBlock[8] = this.config.timeCost;
+				this.addrBlock[9] = this.config.parallelism;
+				this.addrBlock[10] = this.config.mode === "hybrid" ? 0 : 1;
+				permuteBlock(this.addrBlock);
+				this.cachedAddrPass = pass;
+				this.cachedAddrLane = lane;
+				this.cachedAddrSegment = addrSegment;
+			}
+			pseudoRand = this.addrBlock[index % BLOCK_SIZE_WORDS] >>> 0;
 		} else {
 			// Data-dependent index derived from the first word of the previous block
 			pseudoRand = prevBlock[0] >>> 0;
@@ -246,10 +264,11 @@ export class MemoryDag {
 		const digestBytes = new Uint8Array(finalDigest);
 		const output = digestBytes.slice(0, this.config.outputLength);
 
-		// Wipe the memory arena so intermediate graph state does not linger in the heap.
-		// In long-running serverless environments, retained ArrayBuffers can accumulate
-		// and expose intermediate values to co-resident code with memory-read primitives.
+		// Wipe the memory arena and scratch buffers so intermediate graph state does not linger in the heap.
 		new Uint8Array(this.memoryBuffer).fill(0);
+		this.addrBlock.fill(0);
+		tempBlock.fill(0);
+		finalBlock.fill(0);
 
 		return output;
 	}

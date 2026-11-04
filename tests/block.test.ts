@@ -35,7 +35,7 @@ describe("AURA Block Operations", () => {
 		expect(dst[42]).toBe(0xdeadbeef);
 	});
 
-	it("should provide non-linear diffusion through permuteBlock", () => {
+	it("should provide non-linear diffusion across all 256 words through permuteBlock", () => {
 		const block1 = new Uint32Array(BLOCK_SIZE_WORDS);
 		const block2 = new Uint32Array(BLOCK_SIZE_WORDS);
 
@@ -45,14 +45,19 @@ describe("AURA Block Operations", () => {
 		permuteBlock(block1);
 		permuteBlock(block2);
 
-		// Diffusion check: changing 1 bit should change many words
+		// Diffusion check: changing 1 bit in word 0 must diffuse across all 16x16 sub-partitions
 		let diffWords = 0;
-		for (let i = 0; i < 16; i++) {
+		let nonZeroWords = 0;
+		for (let i = 0; i < BLOCK_SIZE_WORDS; i++) {
 			if (block1[i] !== block2[i]) {
 				diffWords++;
 			}
+			if (block1[i] !== 0) {
+				nonZeroWords++;
+			}
 		}
-		expect(diffWords).toBeGreaterThan(8);
+		expect(nonZeroWords).toBe(BLOCK_SIZE_WORDS);
+		expect(diffWords).toBeGreaterThan(200);
 	});
 
 	it("should mix previous and reference blocks deterministically", () => {
