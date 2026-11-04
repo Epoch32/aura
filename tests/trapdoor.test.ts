@@ -127,6 +127,28 @@ describe("AURA PHC Version Validation", () => {
 		const isValid = await Aura.verify("password", tamperedEnv, trapdoorKey);
 		expect(isValid).toBe(false);
 	});
+
+	it("should reject oversized salt, oversized publicAnchor, and malformed PHC strings", async () => {
+		const hashResult = await Aura.hash("password", { memoryCostKb: 32, timeCost: 1 });
+
+		// Extra trailing $ segment
+		expect(await Aura.verify("password", `${hashResult.encoded}$extra`)).toBe(false);
+		// Trailing non-digits in numeric param
+		expect(await Aura.verify("password", hashResult.encoded.replace("m=32,", "m=32xyz,"))).toBe(false);
+		// Unknown param key
+		expect(await Aura.verify("password", hashResult.encoded.replace("m=32,", "m=32,foo=1,"))).toBe(false);
+
+		// Oversized salt (> 64 bytes) in PHC and envelope
+		const hugeB64 = "A".repeat(200);
+		const parts = hashResult.encoded.split("$");
+		parts[4] = hugeB64;
+		expect(await Aura.verify("password", parts.join("$"))).toBe(false);
+
+		const trapdoorKey = randomBytes(32);
+		const envelope = await Aura.sealWithTrapdoor("password", trapdoorKey, { memoryCostKb: 32, timeCost: 1 });
+		expect(await Aura.verify("password", { ...envelope, salt: hugeB64 }, trapdoorKey)).toBe(false);
+		expect(await Aura.verify("password", { ...envelope, publicAnchor: hugeB64 }, trapdoorKey)).toBe(false);
+	});
 });
 
 describe("MemoryDag Safety Guards", () => {

@@ -88,8 +88,8 @@ export class Aura {
 	): Promise<Uint8Array> {
 		const config = Aura.resolveConfig(options);
 		const pwdBytes = Aura.toBytes(password);
-		if (salt.length < 8) {
-			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		if (salt.length < 8 || salt.length > 64) {
+			throw new Error("Salt must be between 8 and 64 bytes; 16 bytes (128 bits) is recommended");
 		}
 
 		const h0 = await MemoryDag.computeInitialSeed(
@@ -113,8 +113,8 @@ export class Aura {
 	): Promise<AuraHashResult> {
 		const config = Aura.resolveConfig(options);
 		const salt = options?.salt ?? randomBytes(16);
-		if (salt.length < 8) {
-			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		if (salt.length < 8 || salt.length > 64) {
+			throw new Error("Salt must be between 8 and 64 bytes; 16 bytes (128 bits) is recommended");
 		}
 		const rawHash = await Aura.deriveKey(password, salt, options);
 
@@ -167,8 +167,8 @@ export class Aura {
 	): Promise<AuraSealedEnvelope> {
 		const config = Aura.resolveConfig(options);
 		const salt = options?.salt ?? randomBytes(16);
-		if (salt.length < 8) {
-			throw new Error("Salt must be at least 8 bytes; 16 bytes (128 bits) is recommended");
+		if (salt.length < 8 || salt.length > 64) {
+			throw new Error("Salt must be between 8 and 64 bytes; 16 bytes (128 bits) is recommended");
 		}
 		const pwdBytes = Aura.toBytes(password);
 		const isMasked = options?.masked ?? true;
@@ -246,14 +246,27 @@ export class Aura {
 
 		// Case A: Trapdoor Envelope Verification
 		if (typeof hashOrEnvelope === "object") {
-			const salt = base64UrlToBytes(hashOrEnvelope.salt);
-			const publicAnchor = base64UrlToBytes(hashOrEnvelope.publicAnchor);
-			// Guard against oversized dagOutput blobs: check the approximate decoded length
-			// before allocating, since MemoryDag caps outputLength at 64 bytes.
-			const approxDecodedLen = Math.floor(hashOrEnvelope.dagOutput.length * 3 / 4);
-			if (approxDecodedLen < 1 || approxDecodedLen > 64) {
+			if (
+				hashOrEnvelope === null ||
+				typeof hashOrEnvelope.salt !== "string" ||
+				typeof hashOrEnvelope.publicAnchor !== "string" ||
+				typeof hashOrEnvelope.dagOutput !== "string"
+			) {
 				return false;
 			}
+			// Guard against oversized salt, publicAnchor, and dagOutput blobs before decoding.
+			const approxSaltLen = Math.floor((hashOrEnvelope.salt.length * 3) / 4);
+			const approxAnchorLen = Math.floor((hashOrEnvelope.publicAnchor.length * 3) / 4);
+			const approxDecodedLen = Math.floor((hashOrEnvelope.dagOutput.length * 3) / 4);
+			if (
+				approxSaltLen < 8 || approxSaltLen > 64 ||
+				approxAnchorLen !== 32 ||
+				approxDecodedLen < 1 || approxDecodedLen > 64
+			) {
+				return false;
+			}
+			const salt = base64UrlToBytes(hashOrEnvelope.salt);
+			const publicAnchor = base64UrlToBytes(hashOrEnvelope.publicAnchor);
 			const rawDagStored = base64UrlToBytes(hashOrEnvelope.dagOutput);
 			// Validate envelope params — mirrors the bounds enforced in the PHC string path
 			// to prevent DoS via enormous allocation, CPU exhaustion, or silent mode degradation.
@@ -323,8 +336,15 @@ export class Aura {
 		}
 
 		// Case B: Standard PHC Formatted String Verification
-		const parts = hashOrEnvelope.split("$").filter(Boolean);
-		if (parts.length < 5 || parts[0] !== "aura") {
+		if (typeof hashOrEnvelope !== "string" || hashOrEnvelope.length > 512) {
+			return false;
+		}
+		const rawParts = hashOrEnvelope.split("$");
+		if (rawParts.length !== 6 || rawParts[0] !== "") {
+			return false;
+		}
+		const parts = rawParts.slice(1);
+		if (parts[0] !== "aura" || parts.some((p) => p.length === 0)) {
 			return false;
 		}
 
@@ -333,22 +353,40 @@ export class Aura {
 			return false;
 		}
 
-		// Parse params — reject duplicate keys to prevent parameter injection attacks.
-		// e.g. "m=4096,...,m=64" must not silently downgrade memory cost to 64 KB.
+		// Parse params — reject duplicate or unknown keys and non-integer values
+		// to prevent parameter injection attacks (e.g. "m=4096,...,m=64" or "m=4096xyz").
+		const ALLOWED_KEYS = new Set(["m", "t", "p", "mode"]);
 		const paramStr = parts[2];
 		const params = new Map<string, string>();
 		for (const kv of paramStr.split(",")) {
-			const [k, v] = kv.split("=");
-			if (params.has(k)) {
-				return false; // duplicate key — reject as malformed / tampered
+			const eqParts = kv.split("=");
+			if (eqParts.length !== 2) {
+				return false;
+			}
+			const [k, v] = eqParts;
+			if (!ALLOWED_KEYS.has(k) || params.has(k) || v.length === 0) {
+				return false;
 			}
 			params.set(k, v);
 		}
 
-		const memoryCostKb = Number.parseInt(params.get("m") ?? "4096", 10);
-		const timeCost = Number.parseInt(params.get("t") ?? "2", 10);
-		const parallelism = Number.parseInt(params.get("p") ?? "1", 10);
-		const mode = (params.get("mode") ?? "hybrid") as AuraMode;
+		const mStr = params.get("m");
+		const tStr = params.get("t");
+		const pStr = params.get("p");
+		const modeStr = params.get("mode");
+		if (
+			!mStr || !/^\d+$/.test(mStr) ||
+			!tStr || !/^\d+$/.test(tStr) ||
+			!pStr || !/^\d+$/.test(pStr) ||
+			!modeStr
+		) {
+			return false;
+		}
+
+		const memoryCostKb = Number.parseInt(mStr, 10);
+		const timeCost = Number.parseInt(tStr, 10);
+		const parallelism = Number.parseInt(pStr, 10);
+		const mode = modeStr as AuraMode;
 
 		// Validate parameter ranges — prevents DoS via enormous memory allocation or
 		// unbounded computation, and rejects unknown mode strings that would silently
@@ -366,14 +404,16 @@ export class Aura {
 			return false;
 		}
 
-		const salt = base64UrlToBytes(parts[3]);
-		// Pre-check hash length before decoding — mirrors the envelope dagOutput guard.
-		// A crafted PHC string with a huge parts[4] segment would otherwise allocate
-		// a large buffer before MemoryDag's outputLength > 64 check can reject it.
-		const approxHashLen = Math.floor(parts[4].length * 3 / 4);
-		if (approxHashLen < 1 || approxHashLen > 64) {
+		// Pre-check salt and hash lengths before decoding to prevent heap allocation DoS.
+		const approxSaltLen = Math.floor((parts[3].length * 3) / 4);
+		const approxHashLen = Math.floor((parts[4].length * 3) / 4);
+		if (
+			approxSaltLen < 8 || approxSaltLen > 64 ||
+			approxHashLen < 1 || approxHashLen > 64
+		) {
 			return false;
 		}
+		const salt = base64UrlToBytes(parts[3]);
 		const expectedHash = base64UrlToBytes(parts[4]);
 
 		const computedHash = await Aura.deriveKey(pwdBytes, salt, {
