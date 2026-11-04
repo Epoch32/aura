@@ -9,6 +9,7 @@ export {
 	type AuraHashResult,
 	type AuraOptions,
 	type AuraSealedEnvelope,
+	type AuraVerifyOptions,
 } from "./core/aura";
 export {
 	BLOCK_SIZE_BYTES,

@@ -42,4 +42,30 @@ describe("AURA High-Level API", () => {
 		// Output length is part of domain separation header
 		expect(key32).not.toEqual(key64.slice(0, 32));
 	});
+
+	it("should bind and verify additionalData in both PHC hashes and sealed envelopes", async () => {
+		const ad = utf8ToBytes("tenant:acme-corp");
+		const wrongAd = utf8ToBytes("tenant:other-corp");
+
+		const hashResult = await Aura.hash(password, {
+			memoryCostKb: 32,
+			timeCost: 1,
+			additionalData: ad,
+		});
+
+		expect(await Aura.verify(password, hashResult.encoded, { additionalData: ad })).toBe(true);
+		expect(await Aura.verify(password, hashResult.encoded, { additionalData: wrongAd })).toBe(false);
+		expect(await Aura.verify(password, hashResult.encoded)).toBe(false);
+
+		const trapdoorKey = utf8ToBytes("0123456789abcdef0123456789abcdef");
+		const envelope = await Aura.sealWithTrapdoor(password, trapdoorKey, {
+			memoryCostKb: 32,
+			timeCost: 1,
+			additionalData: ad,
+		});
+
+		expect(await Aura.verify(password, envelope, trapdoorKey, { additionalData: ad })).toBe(true);
+		expect(await Aura.verify(password, envelope, trapdoorKey, { additionalData: wrongAd })).toBe(false);
+		expect(await Aura.verify(password, envelope, trapdoorKey)).toBe(false);
+	});
 });

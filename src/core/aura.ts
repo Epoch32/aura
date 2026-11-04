@@ -7,12 +7,18 @@
 import {
 	base64UrlToBytes,
 	bytesToBase64Url,
+	concatBytes,
 	constantTimeEqual,
+	encodeLengthPrefixed,
 	randomBytes,
 	utf8ToBytes,
 } from "../encoding/bytes";
 import { AuraMode, MemoryDag, MemoryDagConfig } from "./memory-dag";
 import { TrapdoorEngine } from "../trapdoor/trapdoor";
+
+export interface AuraVerifyOptions {
+	readonly additionalData?: Uint8Array;
+}
 
 export interface AuraOptions {
 	readonly memoryCostKb?: number; // Default: 4096 KB (4 MB)
@@ -136,6 +142,7 @@ export class Aura {
 		mode: AuraMode,
 		masked: boolean,
 		outputLength: number,
+		additionalData?: Uint8Array,
 	): Uint8Array {
 		const meta = new Uint8Array(22);
 		const view = new DataView(meta.buffer);
@@ -146,7 +153,7 @@ export class Aura {
 		view.setUint8(16, mode === "hybrid" ? 0 : mode === "independent" ? 1 : 2);
 		view.setUint8(17, masked ? 1 : 0);
 		view.setUint32(18, outputLength, true);
-		return meta;
+		return concatBytes(meta, encodeLengthPrefixed(additionalData ?? new Uint8Array(0)));
 	}
 
 	/**
@@ -180,6 +187,7 @@ export class Aura {
 			config.mode,
 			isMasked,
 			dagOutput.length,
+			options?.additionalData,
 		);
 		const publicAnchor = await TrapdoorEngine.computePublicAnchor(
 			dagOutput,
@@ -215,10 +223,14 @@ export class Aura {
 	static async verify(
 		password: string | Uint8Array,
 		hashOrEnvelope: string | AuraSealedEnvelope,
-		trapdoorKey?: Uint8Array,
+		trapdoorKeyOrOptions?: Uint8Array | AuraVerifyOptions,
+		options?: AuraVerifyOptions,
 	): Promise<boolean> {
 		try {
-			return await Aura._verify(password, hashOrEnvelope, trapdoorKey);
+			const isKey = trapdoorKeyOrOptions instanceof Uint8Array;
+			const trapdoorKey = isKey ? trapdoorKeyOrOptions : undefined;
+			const verifyOpts = isKey ? options : trapdoorKeyOrOptions;
+			return await Aura._verify(password, hashOrEnvelope, trapdoorKey, verifyOpts);
 		} catch {
 			return false;
 		}
@@ -228,6 +240,7 @@ export class Aura {
 		password: string | Uint8Array,
 		hashOrEnvelope: string | AuraSealedEnvelope,
 		trapdoorKey?: Uint8Array,
+		options?: AuraVerifyOptions,
 	): Promise<boolean> {
 		const pwdBytes = Aura.toBytes(password);
 
@@ -264,6 +277,7 @@ export class Aura {
 				hashOrEnvelope.mode,
 				isMasked,
 				rawDagStored.length,
+				options?.additionalData,
 			);
 
 			// Masked Vault Mode: dagOutput is blinded under K.
@@ -302,6 +316,7 @@ export class Aura {
 				parallelism: hashOrEnvelope.parallelism,
 				mode: hashOrEnvelope.mode,
 				outputLength: rawDagStored.length,
+				additionalData: options?.additionalData,
 			};
 			const computedDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
 			return constantTimeEqual(rawDagStored, computedDag);
@@ -367,6 +382,7 @@ export class Aura {
 			parallelism,
 			mode,
 			outputLength: expectedHash.length,
+			additionalData: options?.additionalData,
 		});
 
 		return constantTimeEqual(expectedHash, computedHash);
