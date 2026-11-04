@@ -12,18 +12,18 @@ export interface TrapdoorCommitment {
 
 export class TrapdoorEngine {
 	/**
-	 * Computes the Public Anchor as HMAC-SHA256(trapdoorKey, LP(dagOutput) || LP(salt))
+	 * Computes the Public Anchor as HMAC-SHA256(trapdoorKey, LP(dagOutput, salt, password, envelopeMeta))
 	 *
-	 * Using HMAC here (rather than SHA-256) makes the trapdoor key K cryptographically
-	 * required to compute or verify the anchor. An attacker with the stored dagOutput
-	 * cannot check candidate passwords against the anchor without possessing K.
-	 *
-	 * Inputs are length-prefix encoded to prevent ambiguous-concatenation attacks.
+	 * Using HMAC here makes the trapdoor key K cryptographically required to compute or verify
+	 * the anchor, while binding password, dagOutput, salt, and envelope parameters enables
+	 * instant O(1) verification (< 0.5 ms) for key holders and authenticates the stored envelope.
 	 */
 	static async computePublicAnchor(
 		dagOutput: Uint8Array,
 		trapdoorKey: Uint8Array,
 		salt: Uint8Array,
+		password: Uint8Array = new Uint8Array(0),
+		envelopeMeta: Uint8Array = new Uint8Array(0),
 	): Promise<Uint8Array> {
 		if (trapdoorKey.length < 16) {
 			throw new Error("trapdoorKey must be at least 16 bytes (128 bits); use 32 bytes (256 bits) for full security");
@@ -36,9 +36,8 @@ export class TrapdoorEngine {
 			["sign"],
 		);
 
-		// Length-prefix encoding prevents pwd="abc",salt="defg" from colliding with
-		// pwd="abcd",salt="efg" in the HMAC input stream.
-		const data = encodeLengthPrefixed(dagOutput, salt);
+		// Length-prefix encoding prevents ambiguous-concatenation collisions across fields.
+		const data = encodeLengthPrefixed(dagOutput, salt, password, envelopeMeta);
 		const signature = await crypto.subtle.sign("HMAC", key, data as unknown as BufferSource);
 		return new Uint8Array(signature);
 	}
@@ -95,16 +94,24 @@ export class TrapdoorEngine {
 	/**
 	 * Instant O(1) Verification using the Trapdoor Key (< 0.5 ms)
 	 *
-	 * Recomputes HMAC-SHA256(K, LP(dagOutput) || LP(salt)) and compares to the stored
-	 * publicAnchor. Because K is the HMAC key, this check is impossible without K.
+	 * Recomputes HMAC-SHA256(K, LP(dagOutput, salt, password, envelopeMeta)) and compares
+	 * to the stored publicAnchor. Because K is the HMAC key, this check is impossible without K.
 	 */
 	static async verifyWithTrapdoor(
 		dagOutput: Uint8Array,
 		salt: Uint8Array,
 		publicAnchor: Uint8Array,
 		trapdoorKey: Uint8Array,
+		password: Uint8Array = new Uint8Array(0),
+		envelopeMeta: Uint8Array = new Uint8Array(0),
 	): Promise<boolean> {
-		const expectedAnchor = await TrapdoorEngine.computePublicAnchor(dagOutput, trapdoorKey, salt);
+		const expectedAnchor = await TrapdoorEngine.computePublicAnchor(
+			dagOutput,
+			trapdoorKey,
+			salt,
+			password,
+			envelopeMeta,
+		);
 		return constantTimeEqual(publicAnchor, expectedAnchor);
 	}
 }

@@ -82,6 +82,27 @@ describe("AURA Asymmetric Trapdoor", () => {
 		const isWrongPwdRejected = await Aura.verify(utf8ToBytes("completely-wrong"), envelope, trapdoorKey);
 		expect(isWrongPwdRejected).toBe(false);
 	});
+
+	it("should reject tampered dagOutput or envelope parameters during trapdoor verification", async () => {
+		const envelope = await Aura.sealWithTrapdoor(password, trapdoorKey, {
+			memoryCostKb: 64,
+			timeCost: 1,
+			mode: "hybrid",
+			masked: true,
+		});
+
+		const tamperedDag = {
+			...envelope,
+			dagOutput: envelope.dagOutput.slice(0, -1) + (envelope.dagOutput.endsWith("A") ? "B" : "A"),
+		};
+		expect(await Aura.verify(password, tamperedDag, trapdoorKey)).toBe(false);
+
+		const tamperedCost = { ...envelope, memoryCostKb: 32 };
+		expect(await Aura.verify(password, tamperedCost, trapdoorKey)).toBe(false);
+
+		const tamperedMasked = { ...envelope, masked: false };
+		expect(await Aura.verify(password, tamperedMasked, trapdoorKey)).toBe(false);
+	});
 });
 
 describe("AURA PHC Version Validation", () => {

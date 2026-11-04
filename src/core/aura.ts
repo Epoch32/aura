@@ -128,6 +128,27 @@ export class Aura {
 		};
 	}
 
+	private static encodeEnvelopeMeta(
+		version: number,
+		memoryCostKb: number,
+		timeCost: number,
+		parallelism: number,
+		mode: AuraMode,
+		masked: boolean,
+		outputLength: number,
+	): Uint8Array {
+		const meta = new Uint8Array(22);
+		const view = new DataView(meta.buffer);
+		view.setUint32(0, version, true);
+		view.setUint32(4, memoryCostKb, true);
+		view.setUint32(8, timeCost, true);
+		view.setUint32(12, parallelism, true);
+		view.setUint8(16, mode === "hybrid" ? 0 : mode === "independent" ? 1 : 2);
+		view.setUint8(17, masked ? 1 : 0);
+		view.setUint32(18, outputLength, true);
+		return meta;
+	}
+
 	/**
 	 * Seals a secret with an Asymmetric Trapdoor Key
 	 * If options.masked = true, encrypts dagOutput under K so offline dictionary searches are impossible.
@@ -148,11 +169,25 @@ export class Aura {
 		// 1. Compute Memory-Hard DAG Output
 		const dagOutput = await Aura.deriveKey(pwdBytes, salt, options);
 
-		// 2. Compute Public Anchor: HMAC-SHA256(K, LP(dagOutput, salt))
-		//    The anchor always commits to the *plaintext* dagOutput so that password
-		//    verification requires re-deriving MHF(candidate) and checking the anchor.
-		//    K is the HMAC key — an attacker without K cannot compute or verify the anchor.
-		const publicAnchor = await TrapdoorEngine.computePublicAnchor(dagOutput, trapdoorKey, salt);
+		// 2. Compute Public Anchor: HMAC-SHA256(K, LP(dagOutput, salt, password, envelopeMeta))
+		//    Binds plaintext dagOutput, salt, password, and envelope parameters under K,
+		//    enabling O(1) verification (< 0.5 ms) for key holders and authenticating the envelope.
+		const envelopeMeta = Aura.encodeEnvelopeMeta(
+			Aura.VERSION,
+			config.memoryCostKb,
+			config.timeCost,
+			config.parallelism,
+			config.mode,
+			isMasked,
+			dagOutput.length,
+		);
+		const publicAnchor = await TrapdoorEngine.computePublicAnchor(
+			dagOutput,
+			trapdoorKey,
+			salt,
+			pwdBytes,
+			envelopeMeta,
+		);
 
 		// 3. Optional Vault Masking: storedDagOutput = dagOutput ^ HKDF(K, salt)
 		//    Blinds the stored bytes so an attacker without K cannot run the MHF
@@ -220,6 +255,47 @@ export class Aura {
 			) {
 				return false;
 			}
+			const isMasked = Boolean(hashOrEnvelope.masked);
+			const envelopeMeta = Aura.encodeEnvelopeMeta(
+				hashOrEnvelope.version,
+				hashOrEnvelope.memoryCostKb,
+				hashOrEnvelope.timeCost,
+				hashOrEnvelope.parallelism,
+				hashOrEnvelope.mode,
+				isMasked,
+				rawDagStored.length,
+			);
+
+			// Masked Vault Mode: dagOutput is blinded under K.
+			// Unmask rawDagStored in O(1) via HKDF and verify the HMAC anchor in O(1) (< 0.5 ms).
+			if (isMasked) {
+				if (!trapdoorKey) {
+					return false; // Cannot verify masked envelope without trapdoor key
+				}
+				const unmaskedDag = await TrapdoorEngine.maskDagOutput(rawDagStored, trapdoorKey, salt);
+				return TrapdoorEngine.verifyWithTrapdoor(
+					unmaskedDag,
+					salt,
+					publicAnchor,
+					trapdoorKey,
+					pwdBytes,
+					envelopeMeta,
+				);
+			}
+
+			// Fast Path (Unmasked + trapdoor key): O(1) HMAC check without executing the MHF.
+			if (trapdoorKey) {
+				return TrapdoorEngine.verifyWithTrapdoor(
+					rawDagStored,
+					salt,
+					publicAnchor,
+					trapdoorKey,
+					pwdBytes,
+					envelopeMeta,
+				);
+			}
+
+			// Slow Path (Unmasked, no trapdoor key): recompute Memory-Hard DAG and compare directly.
 			const dagOptions = {
 				memoryCostKb: hashOrEnvelope.memoryCostKb,
 				timeCost: hashOrEnvelope.timeCost,
@@ -227,29 +303,6 @@ export class Aura {
 				mode: hashOrEnvelope.mode,
 				outputLength: rawDagStored.length,
 			};
-
-			// Masked Vault Mode: dagOutput is blinded under K.
-			// The anchor commits to the *plaintext* dagOutput, so we must re-derive the
-			// candidate DAG from the submitted password and check it against the anchor.
-			// Without K the attacker cannot check the anchor, and without the plaintext
-			// dagOutput they cannot compare directly — offline attacks are blocked.
-			if (hashOrEnvelope.masked) {
-				if (!trapdoorKey) {
-					return false; // Cannot verify masked envelope without trapdoor key
-				}
-				const candidateDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
-				return TrapdoorEngine.verifyWithTrapdoor(candidateDag, salt, publicAnchor, trapdoorKey);
-			}
-
-			// Unmasked + trapdoor key: the anchor commits to the plaintext dagOutput stored in
-			// the envelope, so we must re-derive the candidate DAG and verify via HMAC.
-			if (trapdoorKey) {
-				const candidateDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
-				return TrapdoorEngine.verifyWithTrapdoor(candidateDag, salt, publicAnchor, trapdoorKey);
-			}
-
-			// Slow Path (no trapdoor key): compare dagOutput directly.
-			// The anchor is HMAC-protected and cannot be verified without K.
 			const computedDag = await Aura.deriveKey(pwdBytes, salt, dagOptions);
 			return constantTimeEqual(rawDagStored, computedDag);
 		}
