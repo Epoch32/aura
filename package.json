@@ -28,6 +28,7 @@
 		"provenance": true
 	},
 	"scripts": {
+		"prepare": "bun run build",
 		"build": "bun build ./src/index.ts --outdir ./dist --target browser --minify-whitespace && tsc -p tsconfig.build.json",
 		"prepublishOnly": "bun test && bun run build",
 		"test": "bun test",
