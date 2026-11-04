@@ -86,7 +86,9 @@ export class TrapdoorEngine {
 		const mask = await TrapdoorEngine.deriveMaskKey(trapdoorKey, salt, dagOutput.length);
 		const masked = new Uint8Array(dagOutput.length);
 		for (let i = 0; i < dagOutput.length; i++) {
-			masked[i] = dagOutput[i] ^ mask[i];
+			const dagByte = dagOutput[i] ?? 0;
+			const maskByte = mask[i] ?? 0;
+			masked[i] = dagByte ^ maskByte;
 		}
 		return masked;
 	}
